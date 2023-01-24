@@ -23,7 +23,7 @@ rand = "0.8.5"
 # common interfaces for all yaxpeax decoders
 yaxpeax-arch = { version = "0.2.4" , default-features = false, features = ["std"] }
 
-yaxpeax-sm83 = { version = "0.2" }
+yaxpeax-sm83 = { version = "0.2", path = "/toy/yaxpeax/arch/sm83/" }
 
 [profile.release]
 lto = true

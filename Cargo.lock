@@ -390,8 +390,6 @@ dependencies = [
 [[package]]
 name = "yaxpeax-sm83"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5175d9ee200f1a2b8773500c579608f89b898f4439dfa87b09b23d4143e8d2f0"
 dependencies = [
  "num_enum",
  "yaxpeax-arch",

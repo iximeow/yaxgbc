@@ -4,8 +4,10 @@ use clap::Parser;
 use rand::RngCore;
 use rand::rngs::OsRng;
 
-use yaxpeax_arch::{AddressBase, Decoder, ReadError, ReaderBuilder, LengthedInstruction};
+use yaxpeax_arch::{Arch, AddressBase, Decoder, ReadError, ReaderBuilder, LengthedInstruction};
 use yaxpeax_sm83::{Opcode, Operand};
+use yaxpeax_arch::U8Reader;
+use yaxpeax_sm83::SM83;
 
 #[derive(Parser)]
 #[clap(about, version, author)]
@@ -82,7 +84,7 @@ impl Lcd {
 
         if line_time > Self::LINE_TIME {
             // ok, line's done and we're resetting to mode 2 (exiting mode 0)
-            eprintln!("line {} done", self.ly);
+//            eprintln!("line {} done", self.ly);
             self.current_line_start += (line_time / Self::LINE_TIME) * Self::LINE_TIME;
             self.ly += 1;
             line_time -= line_time % Self::LINE_TIME;
@@ -136,6 +138,807 @@ struct Cpu {
     // interrupt master enable
     ime: bool,
     verbose: bool,
+}
+
+struct ExecutionEnvironment<'env, 'storage: 'env> {
+    cpu: &'env mut Cpu,
+    storage: &'env mut MemoryMapping<'storage>,
+    clocks: u16,
+}
+
+use yaxpeax_sm83::{BitOp, RotOp, Op8bAOp, Reg8b, Reg16b, DerefReg};
+impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yaxpeax_sm83::DecodeHandler<T> for ExecutionEnvironment<'_, '_> {
+    fn on_word_read(&mut self, word: u8) {
+        self.cpu.pc = self.cpu.pc.wrapping_add(1);
+        self.clocks += 4;
+    }
+
+    fn on_ld_8b_imm(&mut self, op: Reg8b, imm: u8) -> Result<(), <SM83 as Arch>::DecodeError> {
+        match op {
+            Reg8b::A => { self.cpu.af[1] = imm; }
+            Reg8b::B => { self.cpu.bc[1] = imm; }
+            Reg8b::C => { self.cpu.bc[0] = imm; }
+            Reg8b::D => { self.cpu.hl[1] = imm; }
+            Reg8b::E => { self.cpu.hl[0] = imm; }
+            Reg8b::H => { self.cpu.hl[1] = imm; }
+            Reg8b::L => { self.cpu.hl[0] = imm; }
+            Reg8b::DerefHL => { self.storage.store(u16::from_le_bytes(self.cpu.hl), imm) }
+        };
+        Ok(())
+    }
+
+    fn on_inc_8b(&mut self, op: Reg8b) -> Result<(), <SM83 as Arch>::DecodeError> {
+        fn do_reg_inc(reg: &mut u8, f: &mut u8) {
+            let v = *reg;
+            if v & 0x0f == 0x0f {
+                *f |= 0b0010_0000;
+            } else {
+                *f &= !0b0010_0000;
+            }
+            *f |= 0b0100_0000;
+            if v == 0xff {
+                *f |= 0b1000_0000;
+            } else {
+                *f &= !0b1000_0000;
+            }
+            let v = v.wrapping_add(1);
+            *reg = v;
+        }
+        match op {
+            Reg8b::A => {
+                let (l, r) = self.cpu.af.split_at_mut(0);
+                do_reg_inc(&mut r[0], &mut l[0]);
+            }
+            Reg8b::B => { do_reg_inc(&mut self.cpu.bc[1], &mut self.cpu.af[0]); }
+            Reg8b::C => { do_reg_inc(&mut self.cpu.bc[0], &mut self.cpu.af[0]); }
+            Reg8b::D => { do_reg_inc(&mut self.cpu.hl[1], &mut self.cpu.af[0]); }
+            Reg8b::E => { do_reg_inc(&mut self.cpu.hl[0], &mut self.cpu.af[0]); }
+            Reg8b::H => { do_reg_inc(&mut self.cpu.hl[1], &mut self.cpu.af[0]); }
+            Reg8b::L => { do_reg_inc(&mut self.cpu.hl[0], &mut self.cpu.af[0]); }
+            Reg8b::DerefHL => {
+                let hl = u16::from_le_bytes(self.cpu.hl);
+                let mut v = self.storage.load(hl);
+                do_reg_inc(&mut v, &mut self.cpu.af[0]);
+                self.storage.store(hl, v);
+            }
+        };
+        Ok(())
+    }
+
+    fn on_dec_8b(&mut self, op: Reg8b) -> Result<(), <SM83 as Arch>::DecodeError> {
+        fn do_reg_dec(reg: &mut u8, f: &mut u8) {
+            let v = *reg;
+            if v & 0x0f == 0x0f {
+                *f |= 0b0010_0000;
+            } else {
+                *f &= !0b0010_0000;
+            }
+            *f |= 0b0100_0000;
+            if v == 0xff {
+                *f |= 0b1000_0000;
+            } else {
+                *f &= !0b1000_0000;
+            }
+            let v = v.wrapping_sub(1);
+            *reg = v;
+        }
+        match op {
+            Reg8b::A => {
+                let (l, r) = self.cpu.af.split_at_mut(0);
+                do_reg_dec(&mut r[0], &mut l[0]);
+            }
+            Reg8b::B => { do_reg_dec(&mut self.cpu.bc[1], &mut self.cpu.af[0]); }
+            Reg8b::C => { do_reg_dec(&mut self.cpu.bc[0], &mut self.cpu.af[0]); }
+            Reg8b::D => { do_reg_dec(&mut self.cpu.hl[1], &mut self.cpu.af[0]); }
+            Reg8b::E => { do_reg_dec(&mut self.cpu.hl[0], &mut self.cpu.af[0]); }
+            Reg8b::H => { do_reg_dec(&mut self.cpu.hl[1], &mut self.cpu.af[0]); }
+            Reg8b::L => { do_reg_dec(&mut self.cpu.hl[0], &mut self.cpu.af[0]); }
+            Reg8b::DerefHL => {
+                let hl = u16::from_le_bytes(self.cpu.hl);
+                let mut v = self.storage.load(hl);
+                do_reg_dec(&mut v, &mut self.cpu.af[0]);
+                self.storage.store(hl, v);
+            }
+        };
+        Ok(())
+    }
+
+    fn on_stop(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        // if KEY1.0 is set, maybe switch clock speeds. otherwise, .. stop?
+        let key1 = self.storage.load(0xff4d);
+        if key1 & 0b01 != 0 {
+            self.cpu.speed_mode ^= 0b01;
+            if self.cpu.verbose {
+                eprintln!("switching speed mode to {}", self.cpu.speed_mode);
+            }
+            self.storage.management_bits[KEY1] &= 0b0111_1111;
+            self.storage.management_bits[KEY1] |= self.cpu.speed_mode << 7;
+        } else {
+            eprintln!("stopping");
+            panic!("");
+        }
+        Ok(())
+    }
+
+    fn on_cpl(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.cpu.af[1] ^= 0xff;
+        self.cpu.af[0] |= 0b0110_0000;
+        Ok(())
+    }
+
+    fn on_di(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.cpu.ime = false;
+        Ok(())
+    }
+
+    fn on_ei(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.cpu.ime = false;
+        Ok(())
+    }
+    fn on_ld_8b_mem_a(&mut self, reg: DerefReg) -> Result<(), <SM83 as Arch>::DecodeError> {
+        match reg {
+            DerefReg::DerefBC => {
+                self.storage.store(u16::from_le_bytes(self.cpu.bc), self.cpu.af[1]);
+            },
+            DerefReg::DerefDE => {
+                self.storage.store(u16::from_le_bytes(self.cpu.de), self.cpu.af[1]);
+            },
+            DerefReg::DerefIncHL => {
+                self.storage.store(u16::from_le_bytes(self.cpu.hl), self.cpu.af[1]);
+                self.cpu.hl = u16::from_le_bytes(self.cpu.hl).wrapping_add(1).to_le_bytes();
+            },
+            DerefReg::DerefDecHL => {
+                self.storage.store(u16::from_le_bytes(self.cpu.hl), self.cpu.af[1]);
+                self.cpu.hl = u16::from_le_bytes(self.cpu.hl).wrapping_sub(1).to_le_bytes();
+            },
+        }
+        Ok(())
+    }
+    fn on_ld_8b_a_mem(&mut self, reg: DerefReg) -> Result<(), <SM83 as Arch>::DecodeError> {
+        let v = match reg {
+            DerefReg::DerefBC => {
+                self.storage.load(u16::from_le_bytes(self.cpu.bc))
+            },
+            DerefReg::DerefDE => {
+                self.storage.load(u16::from_le_bytes(self.cpu.de))
+            },
+            DerefReg::DerefIncHL => {
+                let v = self.storage.load(u16::from_le_bytes(self.cpu.hl));
+                self.cpu.hl = u16::from_le_bytes(self.cpu.hl).wrapping_add(1).to_le_bytes();
+                v
+            },
+            DerefReg::DerefDecHL => {
+                let v = self.storage.load(u16::from_le_bytes(self.cpu.hl));
+                self.cpu.hl = u16::from_le_bytes(self.cpu.hl).wrapping_sub(1).to_le_bytes();
+                v
+            },
+        };
+        self.cpu.af[1] = v;
+        Ok(())
+    }
+    fn on_ld_a16_sp(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
+        let bytes = self.cpu.sp.to_le_bytes();
+        self.storage.store(addr, bytes[0]);
+        self.storage.store(addr.wrapping_add(1), bytes[1]);
+        Ok(())
+    }
+    fn on_ld_rr_d16(&mut self, op: Reg16b, v: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
+        match op {
+            Reg16b::BC => { self.cpu.bc = v.to_le_bytes(); },
+            Reg16b::DE => { self.cpu.de = v.to_le_bytes(); },
+            Reg16b::HL => { self.cpu.hl = v.to_le_bytes(); },
+            Reg16b::SP => { self.cpu.sp = v; },
+        };
+        Ok(())
+    }
+    fn on_ld_sp_hl(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.cpu.sp = u16::from_le_bytes(self.cpu.hl);
+        Ok(())
+    }
+    fn on_ld_a_8b_deref_addr(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.cpu.af[1] = self.storage.load(addr);
+        Ok(())
+    }
+    fn on_ld_8b_deref_addr_a(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.storage.store(addr, self.cpu.af[1]);
+        Ok(())
+    }
+    fn on_ld_hl_deref_sp_offset(&mut self, ofs: i8) -> Result<(), <SM83 as Arch>::DecodeError> {
+        let addr = self.cpu.sp.wrapping_add(ofs as i16 as u16);
+        let low = self.storage.load(addr);
+        let high = self.storage.load(addr.wrapping_add(1));
+        self.cpu.hl = [low, high];
+        Ok(())
+    }
+    fn on_ldh_a_deref_high_8b(&mut self, ofs: u8) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.cpu.af[1] = self.storage.load(0xff00 + ofs as u16);
+        Ok(())
+    }
+    fn on_ldh_deref_high_8b_a(&mut self, ofs: u8) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.storage.store(0xff00 + ofs as u16, self.cpu.af[1]);
+        Ok(())
+    }
+    fn on_ldh_deref_high_c_a(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.storage.store(0xff00 + self.cpu.bc[0] as u16, self.cpu.af[1]);
+        Ok(())
+    }
+    fn on_ldh_a_deref_high_c(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.cpu.af[1] = self.storage.load(0xff00 + self.cpu.bc[0] as u16);
+        Ok(())
+    }
+    fn on_add_16b_hl_rr(&mut self, op: Reg16b) -> Result<(), <SM83 as Arch>::DecodeError> {
+        let hl = u16::from_le_bytes(self.cpu.hl);
+        let other = match op {
+            Reg16b::BC => { u16::from_le_bytes(self.cpu.bc) },
+            Reg16b::DE => { u16::from_le_bytes(self.cpu.de) },
+            Reg16b::HL => { u16::from_le_bytes(self.cpu.hl) },
+            Reg16b::SP => { self.cpu.sp },
+        };
+        let (res, carry) = hl.overflowing_add(other);
+        self.cpu.hl = res.to_le_bytes();
+        self.cpu.af[0] &= !0b0111_0000;
+        if carry {
+            self.cpu.af[0] |= 0b0001_0000;
+        }
+        // half-carry is at bit 11 for hl?
+        if (hl & 0x0fff) + (other & 0x0fff) > 0x0fff {
+            self.cpu.af[0] |= 0b0010_0000;
+        }
+        Ok(())
+    }
+    fn on_add_sp_i8(&mut self, imm: i8) -> Result<(), <SM83 as Arch>::DecodeError> {
+        let sp = self.cpu.sp;
+        let other = imm as i16 as u16;
+        let (res, carry) = sp.overflowing_add(other);
+        self.cpu.sp = res;
+        self.cpu.af[0] &= !0b0111_0000;
+        // TODO: is this for a carry out of 7, or out of 15...
+        if carry {
+            self.cpu.af[0] |= 0b0001_0000;
+        }
+        // half-carry is at bit 3 for sp? source:
+        // https://stackoverflow.com/questions/57958631/game-boy-half-carry-flag-and-16-bit-instructions-especially-opcode-0xe8
+        if (sp & 0x000f) + (other & 0x000f) > 0x000f {
+            self.cpu.af[0] |= 0b0010_0000;
+        }
+        Ok(())
+    }
+    fn on_inc_16b_rr(&mut self, op0: Reg16b) -> Result<(), <SM83 as Arch>::DecodeError> {
+        match op0 {
+            Reg16b::BC => { self.cpu.bc = u16::from_le_bytes(self.cpu.bc).wrapping_add(1).to_le_bytes(); },
+            Reg16b::DE => { self.cpu.de = u16::from_le_bytes(self.cpu.de).wrapping_add(1).to_le_bytes(); },
+            Reg16b::HL => { self.cpu.hl = u16::from_le_bytes(self.cpu.hl).wrapping_add(1).to_le_bytes(); },
+            Reg16b::SP => { self.cpu.sp = self.cpu.sp.wrapping_add(1); },
+        }
+        Ok(())
+    }
+    fn on_dec_16b_rr(&mut self, op0: Reg16b) -> Result<(), <SM83 as Arch>::DecodeError> {
+        match op0 {
+            Reg16b::BC => { self.cpu.bc = u16::from_le_bytes(self.cpu.bc).wrapping_sub(1).to_le_bytes(); },
+            Reg16b::DE => { self.cpu.de = u16::from_le_bytes(self.cpu.de).wrapping_sub(1).to_le_bytes(); },
+            Reg16b::HL => { self.cpu.hl = u16::from_le_bytes(self.cpu.hl).wrapping_sub(1).to_le_bytes(); },
+            Reg16b::SP => { self.cpu.sp = self.cpu.sp.wrapping_sub(1); },
+        }
+        Ok(())
+    }
+    fn on_jr_unconditional(&mut self, rel: i8) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.cpu.pc = self.cpu.pc.wrapping_add(rel as i16 as u16);
+        Ok(())
+    }
+    fn on_jr_nz(&mut self, rel: i8) -> Result<(), <SM83 as Arch>::DecodeError> {
+        if (self.cpu.af[0] & 0b1000_0000) == 0 {
+            <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_jr_unconditional(self, rel)?;
+        }
+        Ok(())
+    }
+    fn on_jr_z(&mut self, rel: i8) -> Result<(), <SM83 as Arch>::DecodeError> {
+        if (self.cpu.af[0] & 0b1000_0000) != 0 {
+            <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_jr_unconditional(self, rel)?;
+        }
+        Ok(())
+    }
+    fn on_jr_nc(&mut self, rel: i8) -> Result<(), <SM83 as Arch>::DecodeError> {
+        if (self.cpu.af[0] & 0b0001_0000) == 0 {
+            <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_jr_unconditional(self, rel)?;
+        }
+        Ok(())
+    }
+    fn on_jr_c(&mut self, rel: i8) -> Result<(), <SM83 as Arch>::DecodeError> {
+        if (self.cpu.af[0] & 0b0001_0000) != 0 {
+            <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_jr_unconditional(self, rel)?;
+        }
+        Ok(())
+    }
+    fn on_jp_unconditional(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.cpu.pc = addr;
+        Ok(())
+    }
+    fn on_jp_nz(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
+        if (self.cpu.af[0] & 0b1000_0000) == 0 {
+            self.cpu.pc = addr;
+        }
+        Ok(())
+    }
+    fn on_jp_z(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
+        if (self.cpu.af[0] & 0b1000_0000) != 0 {
+            self.cpu.pc = addr;
+        }
+        Ok(())
+    }
+    fn on_jp_nc(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
+        if (self.cpu.af[0] & 0b0001_0000) == 0 {
+            self.cpu.pc = addr;
+        }
+        Ok(())
+    }
+    fn on_jp_c(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
+        if (self.cpu.af[0] & 0b0001_0000) != 0 {
+            self.cpu.pc = addr;
+        }
+        Ok(())
+    }
+    fn on_jp_hl(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.cpu.pc = u16::from_le_bytes(self.cpu.hl);
+        Ok(())
+    }
+    fn on_call_unconditional(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.cpu.push(self.storage, self.cpu.pc);
+        self.cpu.pc = addr;
+        Ok(())
+    }
+    fn on_call_nz(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
+        if (self.cpu.af[0] & 0b1000_0000) == 0 {
+            <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_call_unconditional(self, addr)?;
+        }
+        Ok(())
+    }
+    fn on_call_z(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
+        if (self.cpu.af[0] & 0b1000_0000) != 0 {
+            <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_call_unconditional(self, addr)?;
+        }
+        Ok(())
+    }
+    fn on_call_nc(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
+        if (self.cpu.af[0] & 0b0001_0000) == 0 {
+            <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_call_unconditional(self, addr)?;
+        }
+        Ok(())
+    }
+    fn on_call_c(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
+        if (self.cpu.af[0] & 0b0001_0000) != 0 {
+            <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_call_unconditional(self, addr)?;
+        }
+        Ok(())
+    }
+    fn on_bit_op(&mut self, op: BitOp, bit: u8, operand: Reg8b) -> Result<(), <SM83 as Arch>::DecodeError> {
+        match op {
+            BitOp::BIT => {
+                let v = match operand {
+                    Reg8b::B => { self.cpu.bc[1] },
+                    Reg8b::C => { self.cpu.bc[0] },
+                    Reg8b::D => { self.cpu.de[1] },
+                    Reg8b::E => { self.cpu.de[0] },
+                    Reg8b::H => { self.cpu.hl[1] },
+                    Reg8b::L => { self.cpu.hl[0] },
+                    Reg8b::DerefHL => { self.storage.load(u16::from_le_bytes(self.cpu.hl)) },
+                    Reg8b::A => { self.cpu.af[1] },
+                };
+                let res = v & (1 << bit);
+                self.cpu.af[0] &= !0b1110_0000;
+                self.cpu.af[0] |= 0b0010_0000;
+                if res == 0 {
+                    self.cpu.af[0] |= 0b1000_0000;
+                }
+            },
+            BitOp::RES => {
+                match operand {
+                    Reg8b::B => { self.cpu.bc[1] &= !(1 << bit) },
+                    Reg8b::C => { self.cpu.bc[0] &= !(1 << bit) },
+                    Reg8b::D => { self.cpu.de[1] &= !(1 << bit) },
+                    Reg8b::E => { self.cpu.de[0] &= !(1 << bit) },
+                    Reg8b::H => { self.cpu.hl[1] &= !(1 << bit) },
+                    Reg8b::L => { self.cpu.hl[0] &= !(1 << bit) },
+                    Reg8b::DerefHL => {
+                        let addr = u16::from_le_bytes(self.cpu.hl);
+                        let v = self.storage.load(addr);
+                        self.storage.store(addr, v & !(1 << bit));
+                    },
+                    Reg8b::A => { self.cpu.af[1] &= !(1 << bit) },
+                };
+            }
+            BitOp::SET => {
+                match operand {
+                    Reg8b::B => { self.cpu.bc[1] |= 1 << bit },
+                    Reg8b::C => { self.cpu.bc[0] |= 1 << bit },
+                    Reg8b::D => { self.cpu.de[1] |= 1 << bit },
+                    Reg8b::E => { self.cpu.de[0] |= 1 << bit },
+                    Reg8b::H => { self.cpu.hl[1] |= 1 << bit },
+                    Reg8b::L => { self.cpu.hl[0] |= 1 << bit },
+                    Reg8b::DerefHL => {
+                        let addr = u16::from_le_bytes(self.cpu.hl);
+                        let v = self.storage.load(addr);
+                        self.storage.store(addr, v | (1 << bit));
+                    },
+                    Reg8b::A => { self.cpu.af[1] |= 1 << bit },
+                };
+            }
+        }
+        Ok(())
+    }
+    fn on_op_8b_a_r(&mut self, op: Op8bAOp, operand: Reg8b) -> Result<(), <SM83 as Arch>::DecodeError> {
+        let left = self.cpu.af[1];
+        let right = match operand {
+            Reg8b::B => { self.cpu.bc[1] },
+            Reg8b::C => { self.cpu.bc[0] },
+            Reg8b::D => { self.cpu.de[1] },
+            Reg8b::E => { self.cpu.de[0] },
+            Reg8b::H => { self.cpu.hl[1] },
+            Reg8b::L => { self.cpu.hl[0] },
+            Reg8b::DerefHL => { self.storage.load(u16::from_le_bytes(self.cpu.hl)) }
+            Reg8b::A => { self.cpu.af[1] },
+        };
+        match op {
+            Op8bAOp::ADD => {
+                let (res, carry) = left.overflowing_add(right);
+                let h = (left & 0xf) + (right & 0xf) > 0xf;
+                self.cpu.af[0] = 0b0000_0000;
+                if carry { self.cpu.af[0] |= 0b0001_0000; }
+                if h { self.cpu.af[0] |= 0b0010_0000; }
+                if res == 0 { self.cpu.af[0] |= 0b1000_0000; }
+                self.cpu.af[1] = res;
+            },
+            Op8bAOp::ADC => {
+                panic!("adc");
+            },
+            Op8bAOp::SUB => {
+                let (res, carry) = left.overflowing_sub(right);
+                let h = (left & 0xf).wrapping_sub(right & 0xf) > 0xf;
+                self.cpu.af[0] = 0b0100_0000;
+                if carry { self.cpu.af[0] |= 0b0001_0000; }
+                if h { self.cpu.af[0] |= 0b0010_0000; }
+                if res == 0 { self.cpu.af[0] |= 0b1000_0000; }
+                self.cpu.af[1] = res;
+            },
+            Op8bAOp::SBC => {
+                panic!("sbc");
+            },
+            Op8bAOp::AND => {
+                self.cpu.af[1] = left & right;
+                self.cpu.af[0] = 0b0010_0000;
+                if self.cpu.af[1] == 0 {
+                    self.cpu.af[0] |= 0b1000_0000;
+                }
+            },
+            Op8bAOp::XOR => {
+                self.cpu.af[1] = left ^ right;
+                self.cpu.af[0] = 0b0000_0000;
+                if self.cpu.af[1] == 0 {
+                    self.cpu.af[0] |= 0b1000_0000;
+                }
+            },
+            Op8bAOp::OR => {
+                self.cpu.af[1] = left | right;
+                self.cpu.af[0] = 0b0000_0000;
+                if self.cpu.af[1] == 0 {
+                    self.cpu.af[0] |= 0b1000_0000;
+                }
+            },
+            Op8bAOp::CP => {
+                let (res, carry) = left.overflowing_sub(right);
+                let h = (left & 0xf).wrapping_sub(right & 0xf) > 0xf;
+                self.cpu.af[0] = 0b0100_0000;
+                if carry { self.cpu.af[0] |= 0b0001_0000; }
+                if h { self.cpu.af[0] |= 0b0010_0000; }
+                if res == 0 { self.cpu.af[0] |= 0b1000_0000; }
+            },
+        };
+        Ok(())
+    }
+    fn on_op_8b_a_d8(&mut self, op: Op8bAOp, operand: u8) -> Result<(), <SM83 as Arch>::DecodeError> {
+        let left = self.cpu.af[1];
+        let right = operand;
+        match op {
+            Op8bAOp::ADD => {
+                let (res, carry) = left.overflowing_add(right);
+                let h = (left & 0xf) + (right & 0xf) > 0xf;
+                self.cpu.af[0] = 0b0000_0000;
+                if carry { self.cpu.af[0] |= 0b0001_0000; }
+                if h { self.cpu.af[0] |= 0b0010_0000; }
+                if res == 0 { self.cpu.af[0] |= 0b1000_0000; }
+                self.cpu.af[1] = res;
+            },
+            Op8bAOp::ADC => {
+                panic!("adc");
+            },
+            Op8bAOp::SUB => {
+                let (res, carry) = left.overflowing_sub(right);
+                let h = (left & 0xf).wrapping_sub(right & 0xf) > 0xf;
+                self.cpu.af[0] = 0b0100_0000;
+                if carry { self.cpu.af[0] |= 0b0001_0000; }
+                if h { self.cpu.af[0] |= 0b0010_0000; }
+                if res == 0 { self.cpu.af[0] |= 0b1000_0000; }
+                self.cpu.af[1] = res;
+            },
+            Op8bAOp::SBC => {
+                panic!("sbc");
+            },
+            Op8bAOp::AND => {
+                self.cpu.af[1] = left & right;
+                self.cpu.af[0] = 0b0010_0000;
+                if self.cpu.af[1] == 0 {
+                    self.cpu.af[0] |= 0b1000_0000;
+                }
+            },
+            Op8bAOp::XOR => {
+                self.cpu.af[1] = left ^ right;
+                self.cpu.af[0] = 0b0000_0000;
+                if self.cpu.af[1] == 0 {
+                    self.cpu.af[0] |= 0b1000_0000;
+                }
+            },
+            Op8bAOp::OR => {
+                self.cpu.af[1] = left | right;
+                self.cpu.af[0] = 0b0000_0000;
+                if self.cpu.af[1] == 0 {
+                    self.cpu.af[0] |= 0b1000_0000;
+                }
+            },
+            Op8bAOp::CP => {
+                let (res, carry) = left.overflowing_sub(right);
+                let h = (left & 0xf).wrapping_sub(right & 0xf) > 0xf;
+                self.cpu.af[0] = 0b0100_0000;
+                if carry { self.cpu.af[0] |= 0b0001_0000; }
+                if h { self.cpu.af[0] |= 0b0010_0000; }
+                if res == 0 { self.cpu.af[0] |= 0b1000_0000; }
+            },
+        };
+        Ok(())
+    }
+    fn on_rotate_8b_r(&mut self, op: RotOp, operand: Reg8b) -> Result<(), <SM83 as Arch>::DecodeError> {
+        let v = match operand {
+            Reg8b::B => { self.cpu.bc[1] },
+            Reg8b::C => { self.cpu.bc[0] },
+            Reg8b::D => { self.cpu.de[1] },
+            Reg8b::E => { self.cpu.de[0] },
+            Reg8b::H => { self.cpu.hl[1] },
+            Reg8b::L => { self.cpu.hl[0] },
+            Reg8b::DerefHL => { self.storage.load(u16::from_le_bytes(self.cpu.hl)) },
+            Reg8b::A => { self.cpu.af[1] },
+        };
+        let res = match op {
+            RotOp::RL => {
+                let c = (self.cpu.af[0] >> 4) & 0b0001;
+                self.cpu.af[0] = 0b0000_0000;
+                if v & 0x80 != 0 {
+                    self.cpu.af[0] |= 0b0001_0000;
+                }
+                let rotated = (v << 1) | c;
+                if rotated == 0 {
+                    self.cpu.af[0] |= 0b1000_0000;
+                }
+                rotated
+            }
+            RotOp::RR => {
+                let c = (self.cpu.af[0] >> 4) & 0b0001;
+                self.cpu.af[0] = 0b0000_0000;
+                if v & 0x01 != 0 {
+                    self.cpu.af[0] |= 0b0001_0000;
+                }
+                let rotated = (v >> 1) | (c << 7);
+                if rotated == 0 {
+                    self.cpu.af[0] |= 0b1000_0000;
+                }
+                rotated
+            }
+            RotOp::RLC => {
+                let mut c = 0;
+                self.cpu.af[0] = 0b0000_0000;
+                if v & 0x80 != 0 {
+                    c = 0x01;
+                    self.cpu.af[0] |= 0b0001_0000;
+                }
+                let rotated = (v << 1) | c;
+                if rotated == 0 {
+                    self.cpu.af[0] |= 0b1000_0000;
+                }
+                rotated
+            }
+            RotOp::RRC => {
+                let mut c = 0;
+                self.cpu.af[0] = 0b0000_0000;
+                if v & 0x01 != 0 {
+                    c = 0x80;
+                    self.cpu.af[0] |= 0b0001_0000;
+                }
+                let rotated = (v >> 1) | c;
+                if rotated == 0 {
+                    self.cpu.af[0] |= 0b1000_0000;
+                }
+                rotated
+            }
+            RotOp::SLA => {
+                self.cpu.af[0] = 0b0000_0000;
+                if v & 0x80 != 0 {
+                    self.cpu.af[0] |= 0b0001_0000;
+                }
+                let shifted = v << 1;
+                if shifted == 0 {
+                    self.cpu.af[0] |= 0b1000_0000;
+                }
+                shifted
+            }
+            RotOp::SRA => {
+                self.cpu.af[0] = 0b0000_0000;
+                if v & 0x01 != 0 {
+                    self.cpu.af[0] |= 0b0001_0000;
+                }
+                let shifted = v >> 1;
+                if shifted == 0 {
+                    self.cpu.af[0] |= 0b1000_0000;
+                }
+                shifted
+            }
+            RotOp::SRL => {
+                self.cpu.af[0] = 0b0000_0000;
+                if v & 0x01 != 0 {
+                    self.cpu.af[0] |= 0b0001_0000;
+                }
+                let shifted = ((v as i8) >> 1) as u8;
+                if shifted == 0 {
+                    self.cpu.af[0] |= 0b1000_0000;
+                }
+                shifted
+            }
+            RotOp::SWAP => {
+                let swapped = (v >> 4) | (v << 4);
+                self.cpu.af[0] = 0b0000_0000;
+                if swapped == 0 {
+                    self.cpu.af[0] |= 0b1000_0000;
+                }
+                swapped
+            }
+        };
+        match operand {
+            Reg8b::B => { self.cpu.bc[1] = res; }
+            Reg8b::C => { self.cpu.bc[0] = res; }
+            Reg8b::D => { self.cpu.hl[1] = res; }
+            Reg8b::E => { self.cpu.hl[0] = res; }
+            Reg8b::H => { self.cpu.hl[1] = res; }
+            Reg8b::L => { self.cpu.hl[0] = res; }
+            Reg8b::DerefHL => { self.storage.store(u16::from_le_bytes(self.cpu.hl), res) }
+            Reg8b::A => { self.cpu.af[1] = res; }
+        };
+        Ok(())
+    }
+    fn on_push_af(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.cpu.push(self.storage, u16::from_le_bytes(self.cpu.af));
+        Ok(())
+    }
+    fn on_pop_af(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.cpu.af = self.cpu.pop(self.storage).to_le_bytes();
+        Ok(())
+    }
+    fn on_push_bc(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.cpu.push(self.storage, u16::from_le_bytes(self.cpu.bc));
+        Ok(())
+    }
+    fn on_pop_bc(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.cpu.bc = self.cpu.pop(self.storage).to_le_bytes();
+        Ok(())
+    }
+    fn on_push_de(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.cpu.push(self.storage, u16::from_le_bytes(self.cpu.de));
+        Ok(())
+    }
+    fn on_pop_de(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.cpu.de = self.cpu.pop(self.storage).to_le_bytes();
+        Ok(())
+    }
+    fn on_push_hl(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.cpu.push(self.storage, u16::from_le_bytes(self.cpu.hl));
+        Ok(())
+    }
+    fn on_pop_hl(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.cpu.hl = self.cpu.pop(self.storage).to_le_bytes();
+        Ok(())
+    }
+    fn on_nop(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> { Ok(()) }
+    fn on_rlca(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        let v = self.cpu.af[1];
+        let mut c = 0;
+        self.cpu.af[0] = 0b0000_0000;
+        if v & 0x80 != 0 {
+            c = 0x01;
+            self.cpu.af[0] |= 0b0001_0000;
+        }
+        let rotated = (v << 1) | c;
+        if rotated == 0 {
+            self.cpu.af[0] |= 0b1000_0000;
+        }
+        self.cpu.af[1] = rotated;
+        Ok(())
+    }
+    fn on_rrca(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        let v = self.cpu.af[1];
+        let mut c = 0;
+        self.cpu.af[0] = 0b0000_0000;
+        if v & 0x01 != 0 {
+            c = 0x80;
+            self.cpu.af[0] |= 0b0001_0000;
+        }
+        let rotated = (v >> 1) | c;
+        if rotated == 0 {
+            self.cpu.af[0] |= 0b1000_0000;
+        }
+        self.cpu.af[1] = rotated;
+        Ok(())
+    }
+    fn on_rla(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        let v = self.cpu.af[1];
+        let c = (self.cpu.af[0] >> 4) & 0b0001;
+        self.cpu.af[0] = 0b0000_0000;
+        if v & 0x80 != 0 {
+            self.cpu.af[0] |= 0b0001_0000;
+        }
+        let rotated = (v << 1) | c;
+        if rotated == 0 {
+            self.cpu.af[0] |= 0b1000_0000;
+        }
+        self.cpu.af[1] = rotated;
+        Ok(())
+    }
+    fn on_rra(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        let v = self.cpu.af[1];
+        let c = (self.cpu.af[0] >> 4) & 0b0001;
+        self.cpu.af[0] = 0b0000_0000;
+        if v & 0x01 != 0 {
+            self.cpu.af[0] |= 0b0001_0000;
+        }
+        let rotated = (v >> 1) | (c << 7);
+        if rotated == 0 {
+            self.cpu.af[0] |= 0b1000_0000;
+        }
+        self.cpu.af[1] = rotated;
+        Ok(())
+    }
+    fn on_daa(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> { todo!() }
+    fn on_scf(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> { todo!() }
+    fn on_ccf(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> { todo!() }
+    fn on_ret_unconditional(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.cpu.pc = self.cpu.pop(self.storage);
+        Ok(())
+    }
+    fn on_ret_nz(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        if (self.cpu.af[0] & 0b1000_0000) == 0 {
+            <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_ret_unconditional(self)?;
+        }
+        Ok(())
+    }
+    fn on_ret_z(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        if (self.cpu.af[0] & 0b1000_0000) != 0 {
+            <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_ret_unconditional(self)?;
+        }
+        Ok(())
+    }
+    fn on_ret_nc(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        if (self.cpu.af[0] & 0b0001_0000) == 0 {
+            <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_ret_unconditional(self)?;
+        }
+        Ok(())
+    }
+    fn on_ret_c(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        if (self.cpu.af[0] & 0b0001_0000) != 0 {
+            <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_ret_unconditional(self)?;
+        }
+        Ok(())
+    }
+    fn on_rst(&mut self, imm: u8) -> Result<(), <SM83 as Arch>::DecodeError> { todo!() }
+    fn on_reti(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.cpu.pc = self.cpu.pop(self.storage);
+        self.cpu.ime = true;
+//        return 16;
+        Ok(())
+    }
 }
 
 impl fmt::Debug for Cpu {
@@ -203,47 +1006,6 @@ impl yaxpeax_arch::Reader<u16, u8> for BankReader<'_> {
     }
 }
 
-trait OpWidth {
-    fn width(&self) -> Option<u8>;
-}
-impl OpWidth for yaxpeax_sm83::Operand {
-    fn width(&self) -> Option<u8> {
-        match self {
-            Operand::D8(_) |
-            Operand::I8(_) |
-            Operand::A |
-            Operand::B |
-            Operand::C |
-            Operand::D |
-            Operand::E |
-            Operand::H |
-            Operand::L => Some(8),
-            Operand::AF |
-            Operand::BC |
-            Operand::DE |
-            Operand::HL |
-            Operand::SP |
-            Operand::D16(_) => Some(16),
-            Operand::Bit(_) |
-            Operand::R8(_) |
-            Operand::A16(_) |
-            Operand::DerefHL |
-            Operand::DerefBC |
-            Operand::DerefDE |
-            Operand::DerefDecHL |
-            Operand::DerefIncHL |
-            Operand::DerefHighC |
-            Operand::DerefHighD8(_) |
-            Operand::SPWithOffset(_) |
-            Operand::CondC |
-            Operand::CondNC |
-            Operand::CondZ |
-            Operand::CondNZ |
-            Operand::Nothing => None
-        }
-    }
-}
-
 impl Cpu {
     fn new() -> Self {
         Self {
@@ -256,143 +1018,6 @@ impl Cpu {
             speed_mode: 0,
             ime: true,
             verbose: false,
-        }
-    }
-
-    fn get_8b(&mut self, memory: &MemoryMapping, op: Operand) -> u8 {
-        match op {
-            Operand::A => { self.af[1] },
-            Operand::B => { self.bc[1] },
-            Operand::C => { self.bc[0] },
-            Operand::D => { self.de[1] },
-            Operand::E => { self.de[0] },
-            Operand::H => { self.hl[1] },
-            Operand::L => { self.hl[0] },
-            Operand::AF => { panic!("invalid") },
-            Operand::BC => { panic!("invalid") },
-            Operand::DE => { panic!("invalid") },
-            Operand::HL => { panic!("invalid") },
-            Operand::SP => { panic!("invalid") },
-            Operand::A16(addr) => {
-                memory.load(addr)
-            },
-            Operand::DerefHighD8(offset) => {
-                let addr = 0xff00 + offset as u16;
-                memory.load(addr)
-            },
-            Operand::DerefIncHL => {
-                let v = memory.load(u16::from_le_bytes(self.hl));
-                self.hl = u16::from_le_bytes(self.hl).wrapping_add(1).to_le_bytes();
-                v
-            },
-            Operand::DerefDecHL => {
-                let v = memory.load(u16::from_le_bytes(self.hl));
-                self.hl = u16::from_le_bytes(self.hl).wrapping_sub(1).to_le_bytes();
-                v
-            },
-            Operand::DerefDE => {
-                memory.load(u16::from_le_bytes(self.de))
-            },
-            Operand::DerefHL => {
-                memory.load(u16::from_le_bytes(self.hl))
-            },
-            Operand::DerefHighC => {
-                let addr = 0xff00 + self.bc[0] as u16;
-                memory.load(addr)
-            },
-            Operand::D8(v) => v,
-            Operand::D16(v) => { panic!("invalid") },
-            other => { panic!("cannot get value from {:?}", other); }
-        }
-    }
-
-    fn get_16b(&self, memory: &MemoryMapping, op: Operand) -> u16 {
-        match op {
-            Operand::A => { panic!("invalid") },
-            Operand::B => { panic!("invalid") },
-            Operand::C => { panic!("invalid") },
-            Operand::D => { panic!("invalid") },
-            Operand::E => { panic!("invalid") },
-            Operand::H => { panic!("invalid") },
-            Operand::L => { panic!("invalid") },
-            Operand::AF => { u16::from_le_bytes(self.af) },
-            Operand::BC => { u16::from_le_bytes(self.bc) },
-            Operand::DE => { u16::from_le_bytes(self.de) },
-            Operand::HL => { u16::from_le_bytes(self.hl) },
-            Operand::SP => { self.sp },
-            Operand::DerefHighD8(offset) => {
-                panic!("invalid");
-            },
-            Operand::D8(v) => { panic!("invalid") },
-            Operand::D16(v) => v,
-            other => { panic!("cannot get value from {:?}", other); }
-        }
-    }
-
-    fn set_8b(&mut self, memory: &mut MemoryMapping, op: Operand, value: u8) {
-        match op {
-            Operand::A => { self.af[1] = value; },
-            Operand::B => { self.bc[1] = value; },
-            Operand::C => { self.bc[0] = value; },
-            Operand::D => { self.de[1] = value; },
-            Operand::E => { self.de[0] = value; },
-            Operand::H => { self.hl[1] = value; },
-            Operand::L => { self.hl[0] = value; },
-            Operand::AF => { panic!("invalid"); },
-            Operand::BC => { panic!("invalid"); },
-            Operand::DE => { panic!("invalid"); },
-            Operand::HL => { panic!("invalid"); },
-            Operand::SP => { panic!("invalid"); },
-            Operand::A16(addr) => {
-                memory.store(addr, value)
-            },
-            Operand::DerefHighD8(offset) => {
-                let addr = 0xff00 + offset as u16;
-                memory.store(addr, value)
-            },
-            Operand::DerefDecHL => {
-                memory.store(u16::from_le_bytes(self.hl), value);
-                self.hl = u16::from_le_bytes(self.hl).wrapping_sub(1).to_le_bytes();
-            },
-            Operand::DerefIncHL => {
-                memory.store(u16::from_le_bytes(self.hl), value);
-                self.hl = u16::from_le_bytes(self.hl).wrapping_add(1).to_le_bytes();
-            },
-            Operand::DerefDE => {
-                memory.store(u16::from_le_bytes(self.de), value);
-            },
-            Operand::DerefHL => {
-                memory.store(u16::from_le_bytes(self.hl), value);
-            },
-            Operand::DerefHighC => {
-                let addr = 0xff00 + self.bc[0] as u16;
-                memory.store(addr, value);
-            },
-            other => { panic!("cannot set value to {:?}", other); }
-        }
-    }
-
-    fn set_16b(&mut self, memory: &mut MemoryMapping, op: Operand, value: u16) {
-        match op {
-            Operand::A => { panic!("invalid"); },
-            Operand::B => { panic!("invalid"); },
-            Operand::C => { panic!("invalid"); },
-            Operand::D => { panic!("invalid"); },
-            Operand::E => { panic!("invalid"); },
-            Operand::H => { panic!("invalid"); },
-            Operand::L => { panic!("invalid"); },
-            Operand::AF => { self.af = value.to_le_bytes() },
-            Operand::BC => { self.bc = value.to_le_bytes() },
-            Operand::DE => { self.de = value.to_le_bytes() },
-            Operand::HL => { self.hl = value.to_le_bytes() },
-            Operand::SP => { self.sp = value; },
-            Operand::DerefHighD8(offset) => {
-                let bytes = value.to_le_bytes();
-                let addr = 0xff00 + offset as u16;
-                memory.store(addr, bytes[0]);
-                memory.store(addr.wrapping_add(1), bytes[1]);
-            },
-            other => { panic!("cannot set value to {:?}", other); }
         }
     }
 
@@ -409,624 +1034,22 @@ impl Cpu {
         u16::from_le_bytes(bytes)
     }
 
-    fn step(&mut self, memory: &mut MemoryMapping) -> u8 {
-        let mut reader = BankReader::read_at(memory, self.pc);
+    fn step<'storage: 'env, 'env>(&'env mut self, memory: &'env mut MemoryMapping<'storage>) -> u16 {
+        let mut buf = [
+            memory.load(self.pc),
+            memory.load(self.pc + 1),
+            memory.load(self.pc + 2),
+            memory.load(self.pc + 3),
+        ];
+        let mut reader = U8Reader::new(&buf);
         let decoder = yaxpeax_sm83::InstDecoder::default();
+        let mut env = ExecutionEnvironment { cpu: self, storage: memory, clocks: 0 };
 
-        let instr = decoder.decode(&mut reader).unwrap();
+        yaxpeax_sm83::decode_inst(&decoder, &mut env, &mut reader).unwrap();
 
-        self.pc += instr.len();
+        return env.clocks;
 
-        match instr.opcode() {
-            Opcode::CPL => {
-                self.af[1] ^= 0xff;
-                self.af[0] |= 0b0110_0000;
-            }
-            Opcode::DI => {
-                self.ime = false;
-            }
-            Opcode::EI => {
-                self.ime = true;
-            }
-            Opcode::STOP => {
-                // if KEY1.0 is set, maybe switch clock speeds. otherwise, .. stop?
-                let key1 = memory.load(0xff4d);
-                if key1 & 0b01 != 0 {
-                    self.speed_mode ^= 0b01;
-                    if self.verbose {
-                        eprintln!("switching speed mode to {}", self.speed_mode);
-                    }
-                    memory.management_bits[KEY1] &= 0b0111_1111;
-                    memory.management_bits[KEY1] |= self.speed_mode << 7;
-                } else {
-                    eprintln!("stopping");
-                    panic!("");
-                }
-            }
-            Opcode::SWAP => {
-                let value = self.get_8b(memory, instr.operands()[0]);
-                let swapped = (value >> 4) | (value << 4);
-                self.set_8b(memory, instr.operands()[0], swapped);
-                self.af[0] = 0b0000_0000;
-                if swapped == 0 {
-                    self.af[0] |= 0b1000_0000;
-                }
-            }
-            Opcode::AND => {
-                let value = self.get_8b(memory, instr.operands()[0]);
-                self.af[1] = self.af[1] & value;
-                self.af[0] = 0b0000_0000;
-                if self.af[1] == 0 {
-                    self.af[0] |= 0b1000_0000;
-                }
-            }
-            Opcode::XOR => {
-                let value = self.get_8b(memory, instr.operands()[0]);
-                self.af[1] = self.af[1] ^ value;
-                self.af[0] = 0b0000_0000;
-                if self.af[1] == 0 {
-                    self.af[0] |= 0b1000_0000;
-                }
-            }
-            Opcode::OR => {
-                let value = self.get_8b(memory, instr.operands()[0]);
-                self.af[1] = self.af[1] | value;
-                self.af[0] = 0b0000_0000;
-                if self.af[1] == 0 {
-                    self.af[0] |= 0b1000_0000;
-                }
-            }
-            Opcode::BIT => {
-                let n = if let Operand::Bit(b) = instr.operands()[0] {
-                    b
-                } else {
-                    panic!("[!] impossible `bit` instruction");
-                };
-                let res = self.get_8b(memory, instr.operands()[1]) & (1 << n);
-                self.af[0] &= !0b1110_0000;
-                self.af[0] |= 0b0010_0000;
-                if res == 0 {
-                    self.af[0] |= 0b1000_0000;
-                }
-            }
-            Opcode::SET => {
-                let n = if let Operand::Bit(b) = instr.operands()[0] {
-                    b
-                } else {
-                    panic!("[!] impossible `set` instruction");
-                };
-                let res = self.get_8b(memory, instr.operands()[1]) | (1 << n);
-                self.set_8b(memory, instr.operands()[1], res);
-            }
-            Opcode::RES => {
-                let n = if let Operand::Bit(b) = instr.operands()[0] {
-                    b
-                } else {
-                    panic!("[!] impossible `res` instruction");
-                };
-                let res = self.get_8b(memory, instr.operands()[1]) & !(1 << n);
-                self.set_8b(memory, instr.operands()[1], res);
-            }
-            Opcode::SUB => {
-                // all 8b operands
-                // 8b add
-                let a = self.af[1];
-                let other = self.get_8b(memory, instr.operands()[0]);
-                let (res, carry) = a.overflowing_sub(other);
-                self.af[1] = res;
-                self.af[0] &= !0b0111_0000;
-                if carry {
-                    self.af[0] |= 0b0001_0000;
-                }
-                if ((a as i8 & 0x0f) - (other as i8 & 0x0f)) as u8 > 0x0f {
-                    self.af[0] |= 0b0010_0000;
-                }
-            }
-            Opcode::ADD => {
-                match instr.operands()[0] {
-                    Operand::HL => {
-                        // 16b add
-                        let hl = u16::from_le_bytes(self.hl);
-                        let other = self.get_16b(memory, instr.operands()[1]);
-                        let (res, carry) = hl.overflowing_add(other);
-                        self.hl = res.to_le_bytes();
-                        self.af[0] &= !0b0111_0000;
-                        if carry {
-                            self.af[0] |= 0b0001_0000;
-                        }
-                        // half-carry is at bit 11 for hl?
-                        if (hl & 0x0fff) + (other & 0x0fff) > 0x0fff {
-                            self.af[0] |= 0b0010_0000;
-                        }
-                    }
-                    Operand::SP => {
-                        // 16b add
-                        let sp = self.sp;
-                        let other = match instr.operands()[1] {
-                            Operand::I8(v) => v as i16 as u16,
-                            other => { panic!("bad add operand {:?}", other); }
-                        };
-                        let (res, carry) = sp.overflowing_add(other);
-                        self.sp = res;
-                        self.af[0] &= !0b0111_0000;
-                        if carry {
-                            self.af[0] |= 0b0001_0000;
-                        }
-                        // half-carry is at bit 3 for hl?
-                        if (sp & 0x000f) + (other & 0x000f) > 0x000f {
-                            self.af[0] |= 0b0010_0000;
-                        }
-                    }
-                    other => {
-                        // 8b add
-                        let a = self.af[1];
-                        let other = self.get_8b(memory, other); // TODO: probably should be operands[0]?
-                        let (res, carry) = a.overflowing_add(other);
-                        self.af[1] = res;
-                        self.af[0] &= !0b0111_0000;
-                        if carry {
-                            self.af[0] |= 0b0001_0000;
-                        }
-                        if (a & 0x0f) + (other & 0x0f) > 0x0f {
-                            self.af[0] |= 0b0010_0000;
-                        }
-                    }
-                }
-            }
-            Opcode::DEC => {
-                match instr.operands()[0].width() {
-                    Some(8) => {
-                        let v = self.get_8b(memory, instr.operands()[0]);
-                        if v & 0x0f == 0x0f {
-                            self.af[0] |= 0b0010_0000;
-                        } else {
-                            self.af[0] &= !0b0010_0000;
-                        }
-                        self.af[0] |= 0b0100_0000;
-                        if v == 0xff {
-                            self.af[0] |= 0b1000_0000;
-                        } else {
-                            self.af[0] &= !0b1000_0000;
-                        }
-                        self.set_8b(memory, instr.operands()[0], v.wrapping_sub(1));
-                    },
-                    Some(16) => {
-                        let v = self.get_16b(memory, instr.operands()[0]);
-                        self.set_16b(memory, instr.operands()[0], v.wrapping_sub(1));
-                    },
-                    Some(other) => {
-                        panic!("???");
-                    }
-                    None => {
-                        let v = memory.load(u16::from_le_bytes(self.hl));
-                        if v & 0x0f == 0x0f {
-                            self.af[0] |= 0b0010_0000;
-                        } else {
-                            self.af[0] &= !0b0010_0000;
-                        }
-                        self.af[0] |= 0b0100_0000;
-                        if v == 0xff {
-                            self.af[0] |= 0b1000_0000;
-                        } else {
-                            self.af[0] &= !0b1000_0000;
-                        }
-                        memory.store(u16::from_le_bytes(self.hl), v.wrapping_sub(1));
-                    }
-                }
-            }
-            Opcode::INC => {
-                match instr.operands()[0].width() {
-                    Some(8) => {
-                        let v = self.get_8b(memory, instr.operands()[0]);
-                        if v & 0x0f == 0x0f {
-                            self.af[0] |= 0b0010_0000;
-                        } else {
-                            self.af[0] &= !0b0010_0000;
-                        }
-                        self.af[0] |= 0b0100_0000;
-                        if v == 0xff {
-                            self.af[0] |= 0b1000_0000;
-                        } else {
-                            self.af[0] &= !0b1000_0000;
-                        }
-                        self.set_8b(memory, instr.operands()[0], v.wrapping_add(1));
-                    },
-                    Some(16) => {
-                        let v = self.get_16b(memory, instr.operands()[0]);
-                        self.set_16b(memory, instr.operands()[0], v.wrapping_add(1));
-                    },
-                    Some(other) => {
-                        panic!("???");
-                    }
-                    None => {
-                        let v = memory.load(u16::from_le_bytes(self.hl));
-                        if v & 0x0f == 0x0f {
-                            self.af[0] |= 0b0010_0000;
-                        } else {
-                            self.af[0] &= !0b0010_0000;
-                        }
-                        self.af[0] |= 0b0100_0000;
-                        if v == 0xff {
-                            self.af[0] |= 0b1000_0000;
-                        } else {
-                            self.af[0] &= !0b1000_0000;
-                        }
-                        memory.store(u16::from_le_bytes(self.hl), v.wrapping_add(1));
-                    }
-                }
-            }
-            Opcode::LD => {
-                let operands = instr.operands();
-                let widths = (operands[0].width(), operands[1].width());
-                match widths {
-                    (Some(8), None) |
-                    (None, Some(8)) |
-                    (Some(8), Some(8)) => {
-                        let loaded = self.get_8b(memory, operands[1]);
-                        self.set_8b(memory, operands[0], loaded);
-                    },
-                    (Some(16), None) |
-                    (None, Some(16)) |
-                    (Some(16), Some(16)) => {
-                        let loaded = self.get_16b(memory, operands[1]);
-                        self.set_16b(memory, operands[0], loaded);
-                        if let [Operand::D16(_), Operand::SP] = operands {
-                            // for some reason this is four more clocks than bytes+mem access would
-                            // predict.
-                            return 20;
-                        }
-                    },
-                    others => {
-                        panic!("inconsistent ld widths: {:?}", others);
-                    }
-                }
-            }
-            Opcode::LDH => {
-                let loaded = self.get_8b(memory, instr.operands()[1]);
-                self.set_8b(memory, instr.operands()[0], loaded);
-            }
-            Opcode::JP => {
-                let operands = instr.operands();
-                if operands[1] == Operand::Nothing {
-                    // unconditional
-                    let dest = self.get_16b(memory, operands[0]);
-                    self.pc = dest;
-                    if operands[0] == Operand::HL {
-                        return 4;
-                    } else {
-                        // jp <d16>
-                        return 16;
-                    }
-                } else {
-                    let br = match operands[0] {
-                        Operand::CondNZ => {
-                            self.af[0] & 0b1000_0000 == 0
-                        },
-                        Operand::CondZ => {
-                            self.af[0] & 0b1000_0000 != 0
-                        },
-                        Operand::CondNC => {
-                            self.af[0] & 0b0001_0000 == 0
-                        },
-                        Operand::CondC => {
-                            self.af[0] & 0b0001_0000 != 0
-                        },
-                        other => {
-                            panic!("[!] impossible conditional jp");
-                        }
-                    };
-
-                    if br {
-                        if let Operand::D16(addr) = operands[1] {
-                            self.pc = addr;
-                            return 16;
-                        } else {
-                            panic!("[!] op? {:?}", operands[1]);
-                        }
-                    } else {
-                        return 12;
-                    }
-                }
-            }
-            Opcode::JR => {
-                let operands = instr.operands();
-                if operands[1] == Operand::Nothing {
-                    // unconditional
-                    if let Operand::R8(r) = operands[0] {
-                        self.pc = self.pc.wrapping_add(r as i16 as u16);
-                        return 12;
-                    } else {
-                        panic!("[!] op? {:?}", operands[0]);
-                    }
-                } else {
-                    let br = match operands[0] {
-                        Operand::CondNZ => {
-                            self.af[0] & 0b1000_0000 == 0
-                        },
-                        Operand::CondZ => {
-                            self.af[0] & 0b1000_0000 != 0
-                        },
-                        Operand::CondNC => {
-                            self.af[0] & 0b0001_0000 == 0
-                        },
-                        Operand::CondC => {
-                            self.af[0] & 0b0001_0000 != 0
-                        },
-                        other => {
-                            panic!("[!] impossible conditional branch");
-                        }
-                    };
-
-                    if br {
-                        if let Operand::R8(r) = operands[1] {
-                            self.pc = self.pc.wrapping_add(r as i16 as u16);
-                            return 12;
-                        } else {
-                            panic!("[!] op? {:?}", operands[1]);
-                        }
-                    } else {
-                        return 8;
-                    }
-                }
-            }
-            Opcode::SLA => {
-                let v = self.get_8b(memory, instr.operands()[0]);
-                self.af[0] = 0b0000_0000;
-                if v & 0x80 != 0 {
-                    self.af[0] |= 0b0001_0000;
-                }
-                let shifted = v << 1;
-                if shifted == 0 {
-                    self.af[0] |= 0b1000_0000;
-                }
-                self.set_8b(memory, instr.operands()[0], shifted);
-            }
-            Opcode::SRA => {
-                let v = self.get_8b(memory, instr.operands()[0]);
-                self.af[0] = 0b0000_0000;
-                if v & 0x01 != 0 {
-                    self.af[0] |= 0b0001_0000;
-                }
-                let shifted = v >> 1;
-                if shifted == 0 {
-                    self.af[0] |= 0b1000_0000;
-                }
-                self.set_8b(memory, instr.operands()[0], shifted);
-            }
-            Opcode::SRL => {
-                let v = self.get_8b(memory, instr.operands()[0]);
-                self.af[0] = 0b0000_0000;
-                if v & 0x01 != 0 {
-                    self.af[0] |= 0b0001_0000;
-                }
-                let shifted = ((v as i8) >> 1) as u8;
-                if shifted == 0 {
-                    self.af[0] |= 0b1000_0000;
-                }
-                self.set_8b(memory, instr.operands()[0], shifted);
-            }
-            Opcode::RL => {
-                let v = self.get_8b(memory, instr.operands()[0]);
-                let c = (self.af[0] >> 4) & 0b0001;
-                self.af[0] = 0b0000_0000;
-                if v & 0x80 != 0 {
-                    self.af[0] |= 0b0001_0000;
-                }
-                let rotated = (v << 1) | c;
-                if rotated == 0 {
-                    self.af[0] |= 0b1000_0000;
-                }
-                self.set_8b(memory, instr.operands()[0], rotated);
-            }
-            Opcode::RR => {
-                let v = self.get_8b(memory, instr.operands()[0]);
-                let c = (self.af[0] >> 4) & 0b0001;
-                self.af[0] = 0b0000_0000;
-                if v & 0x01 != 0 {
-                    self.af[0] |= 0b0001_0000;
-                }
-                let rotated = (v >> 1) | (c << 7);
-                if rotated == 0 {
-                    self.af[0] |= 0b1000_0000;
-                }
-                self.set_8b(memory, instr.operands()[0], rotated);
-            }
-            Opcode::RLC => {
-                let v = self.get_8b(memory, instr.operands()[0]);
-                let mut c = 0;
-                self.af[0] = 0b0000_0000;
-                if v & 0x80 != 0 {
-                    c = 0x01;
-                    self.af[0] |= 0b0001_0000;
-                }
-                let rotated = (v << 1) | c;
-                if rotated == 0 {
-                    self.af[0] |= 0b1000_0000;
-                }
-                self.set_8b(memory, instr.operands()[0], rotated);
-            }
-            Opcode::RRC => {
-                let v = self.get_8b(memory, instr.operands()[0]);
-                let mut c = 0;
-                self.af[0] = 0b0000_0000;
-                if v & 0x01 != 0 {
-                    c = 0x80;
-                    self.af[0] |= 0b0001_0000;
-                }
-                let rotated = (v >> 1) | c;
-                if rotated == 0 {
-                    self.af[0] |= 0b1000_0000;
-                }
-                self.set_8b(memory, instr.operands()[0], rotated);
-            }
-            Opcode::RLA => {
-                let v = self.af[1];
-                let c = (self.af[0] >> 4) & 0b0001;
-                self.af[0] = 0b0000_0000;
-                if v & 0x80 != 0 {
-                    self.af[0] |= 0b0001_0000;
-                }
-                let rotated = (v << 1) | c;
-                if rotated == 0 {
-                    self.af[0] |= 0b1000_0000;
-                }
-                self.af[1] = rotated;
-            }
-            Opcode::RRA => {
-                let v = self.af[1];
-                let c = (self.af[0] >> 4) & 0b0001;
-                self.af[0] = 0b0000_0000;
-                if v & 0x01 != 0 {
-                    self.af[0] |= 0b0001_0000;
-                }
-                let rotated = (v >> 1) | (c << 7);
-                if rotated == 0 {
-                    self.af[0] |= 0b1000_0000;
-                }
-                self.af[1] = rotated;
-            }
-            Opcode::RLCA => {
-                let v = self.af[1];
-                let mut c = 0;
-                self.af[0] = 0b0000_0000;
-                if v & 0x80 != 0 {
-                    c = 0x01;
-                    self.af[0] |= 0b0001_0000;
-                }
-                let rotated = (v << 1) | c;
-                if rotated == 0 {
-                    self.af[0] |= 0b1000_0000;
-                }
-                self.af[1] = rotated;
-            }
-            Opcode::RRCA => {
-                let v = self.af[1];
-                let mut c = 0;
-                self.af[0] = 0b0000_0000;
-                if v & 0x01 != 0 {
-                    c = 0x80;
-                    self.af[0] |= 0b0001_0000;
-                }
-                let rotated = (v >> 1) | c;
-                if rotated == 0 {
-                    self.af[0] |= 0b1000_0000;
-                }
-                self.af[1] = rotated;
-            }
-            Opcode::CP => {
-                let a = self.af[1];
-                let other = self.get_8b(memory, instr.operands()[0]);
-
-                self.af[0] = 0b0100_0000;
-
-                let res = a.wrapping_sub(other);
-                if res == 0 {
-                    // set Z, clear C
-                    self.af[0] |= 0b1000_0000;
-                } else if res >= 0x80 {
-                    // clear Z, set C
-                    self.af[0] |= 0b0001_0000;
-                } else {
-                    // clear Z, clear C
-                }
-
-                let res = (a & 0xf).wrapping_sub(other & 0xf);
-                if res >= 0x80 {
-                    // set H
-                    self.af[0] |= 0b0010_0000;
-                }
-            }
-            Opcode::RETI => {
-                // unconditional
-                self.pc = self.pop(memory);
-                self.ime = true;
-                return 16;
-            }
-            Opcode::RET => {
-                let operands = instr.operands();
-                if operands[1] == Operand::Nothing {
-                    // unconditional
-                    self.pc = self.pop(memory);
-                    return 16;
-                } else {
-                    let ret = match operands[0] {
-                        Operand::CondNZ => {
-                            self.af[0] & 0b1000_0000 == 0
-                        },
-                        Operand::CondZ => {
-                            self.af[0] & 0b1000_0000 != 0
-                        },
-                        Operand::CondNC => {
-                            self.af[0] & 0b0001_0000 == 0
-                        },
-                        Operand::CondC => {
-                            self.af[0] & 0b0001_0000 != 0
-                        },
-                        other => {
-                            panic!("[!] impossible conditional ret: {}", other);
-                        }
-                    };
-
-                    if ret {
-                        self.pc = self.pop(memory);
-                        return 20;
-                    } else {
-                        return 8;
-                    }
-                }
-            }
-            Opcode::POP => {
-                let v = self.pop(memory);
-                self.set_16b(memory, instr.operands()[0], v);
-            }
-            Opcode::PUSH => {
-                let v = self.get_16b(memory, instr.operands()[0]);
-                self.push(memory, v);
-            }
-            Opcode::NOP => {
-            }
-            Opcode::CALL => {
-                let operands = instr.operands();
-                if operands[1] == Operand::Nothing {
-                    // unconditional
-                    let dest = self.get_16b(memory, operands[0]);
-                    self.push(memory, self.pc);
-                    self.pc = dest;
-                    return 24;
-                } else {
-                    let call = match operands[0] {
-                        Operand::CondNZ => {
-                            self.af[0] & 0b1000_0000 == 0
-                        },
-                        Operand::CondZ => {
-                            self.af[0] & 0b1000_0000 != 0
-                        },
-                        Operand::CondNC => {
-                            self.af[0] & 0b0001_0000 == 0
-                        },
-                        Operand::CondC => {
-                            self.af[0] & 0b0001_0000 != 0
-                        },
-                        other => {
-                            panic!("[!] impossible conditional call: {}", other);
-                        }
-                    };
-
-                    if call {
-                        let dest = self.get_16b(memory, operands[1]);
-                        self.push(memory, self.pc);
-                        self.pc = dest;
-                        return 24;
-                    } else {
-                        return 12;
-                    }
-                }
-            }
-            other => {
-                panic!("[!] unhandled instruction");
-            }
-        }
-
+                /*
         // baseline execution time: four clocks per byte of instruction..
         let mut clocks = 0u16.wrapping_offset(instr.len()).to_linear() as u8 * 4;
 
@@ -1063,8 +1086,7 @@ impl Cpu {
             }
             _ => {}
         }
-
-        clocks
+        */
     }
 }
 
@@ -1341,7 +1363,7 @@ impl GBC {
             // must advance div (now figure out by how much...)
             let div_amount = (div_overshoot as u64 + 255) / 256;
             self.management_bits[DIV] = self.management_bits[DIV].wrapping_add(div_amount as u8);
-            self.next_div_tick = self.next_div_tick.wrapping_add((div_amount * 256));
+            self.next_div_tick = self.next_div_tick.wrapping_add(div_amount * 256);
         }
 
         let lcd_clocks = if self.cpu.speed_mode != 0 {
