@@ -1358,7 +1358,7 @@ impl GBC {
         // practically speaking this will never overflow, but still..
         let new_clock = self.clock.wrapping_add(clocks);
 
-        let div_overshoot = (new_clock - self.next_div_tick) as i64;
+        let div_overshoot = new_clock as i64 - self.next_div_tick as i64;
         if div_overshoot > 0 {
             // must advance div (now figure out by how much...)
             let div_amount = (div_overshoot as u64 + 255) / 256;
