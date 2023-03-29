@@ -217,7 +217,7 @@ impl MemoryBanks for MemoryMapping<'_> {
         } else if addr < 0xd000 {
             self.ram[addr as usize - 0xc000]
         } else if addr < 0xe000 {
-            let nr = self.management_bits[SVBK] as usize & 0b11;
+            let nr = self.management_bits[SVBK] as usize & 0b111;
             let nr = if nr == 0 {
                 1
             } else {
@@ -282,7 +282,7 @@ impl MemoryBanks for MemoryMapping<'_> {
         } else if addr < 0xd000 {
             self.ram[addr as usize - 0xc000] = value;
         } else if addr < 0xe000 {
-            let nr = self.management_bits[SVBK] as usize & 0b11;
+            let nr = self.management_bits[SVBK] as usize & 0b111;
             let nr = if nr == 0 {
                 1
             } else {
@@ -310,8 +310,7 @@ impl MemoryBanks for MemoryMapping<'_> {
             } else if reg == VBK {
                 self.management_bits[reg] = value & 0b01;
             } else if reg == SVBK {
-                self.management_bits[reg] = value & 0b11;
-            } else if reg == KEY1 {
+                self.management_bits[reg] = value & 0b111;
             } else if reg == IE {
                 if self.verbose {
                     eprintln!("setting IE=${:02x}", value);
