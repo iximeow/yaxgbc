@@ -288,7 +288,7 @@ impl MemoryBanks for MemoryMapping<'_> {
             } else {
                 nr
             };
-            self.ram[(addr as usize - 0xd000) + nr * 0x1000] = value;
+            self.ram[(addr as usize - 0xc000) + nr * 0x1000] = value;
         } else if addr < 0xfe00 {
             self.ram[addr as usize - 0xe000] = value;
         } else if addr < 0xfea0 {
