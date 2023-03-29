@@ -194,6 +194,12 @@ struct MemoryMapping<'system> {
     verbose: bool,
 }
 
+impl<'a> fmt::Debug for MemoryMapping<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "MemoryMapping {{ cart: {:?}, verbose: {}, .. }}", &self.cart, &self.verbose)
+    }
+}
+
 impl MemoryBanks for MemoryMapping<'_> {
     fn load(&self, addr: u16) -> u8 {
         if addr < 0x4000 {
@@ -485,11 +491,22 @@ impl GBC {
                 let decoder = yaxpeax_sm83::InstDecoder::default();
 
                 let instr = decoder.decode(&mut reader).unwrap();
+                eprintln!("  {:?}", &mem_map.cart);
                 eprintln!("pc={:#04x} {}", self.cpu.pc, instr);
                 eprintln!("  {:?}", instr);
             }
 
+            let pc_before = self.cpu.pc;
             let clocks = self.cpu.step(&mut mem_map);
+            if self.cpu.sp >= 0xfe00 && self.cpu.sp < 0xff80 {
+                panic!("nonsense sp: ${:04x}", self.cpu.sp);
+            }
+            if self.cpu.pc == 0 {
+                panic!("bogus code detected: pc=0");
+            }
+            if pc_before == self.cpu.pc {
+                panic!("loop detected");
+            }
 
             if self.verbose {
                 eprintln!("clock: {}", self.clock);
@@ -652,11 +669,12 @@ struct GBCCart {
     mapper: Box<dyn MemoryBanks>,
 }
 
-trait MemoryBanks {
+trait MemoryBanks: fmt::Debug {
     fn load(&self, addr: u16) -> u8;
     fn store(&mut self, addr: u16, value: u8);
 }
 
+#[derive(Debug)]
 struct MBC3 {
     ram_enable: u8,
     rom_bank: [u8; 2],
@@ -692,6 +710,12 @@ struct MBC5 {
     ram_bank: u8,
     rom: Box<[u8]>,
     ram: Box<[u8]>,
+}
+
+impl fmt::Debug for MBC5 {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "mbc5 state: ram_enable? {}, rom_bank: {:04x}, ram_bank: {:02x}", self.ram_enable, u16::from_le_bytes(self.rom_bank), self.ram_bank)
+    }
 }
 
 impl MemoryBanks for MBC5 {
@@ -735,6 +759,12 @@ impl MemoryBanks for MBC5 {
 
 struct FlatMapper {
     rom: Box<[u8]>,
+}
+
+impl fmt::Debug for FlatMapper {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "FlatMapper {{ <{} bytes> }}", self.rom.len())
+    }
 }
 
 impl FlatMapper {
