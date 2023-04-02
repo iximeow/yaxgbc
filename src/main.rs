@@ -6,6 +6,7 @@ use yaxpeax_arch::{Decoder, ReadError};
 
 mod cpu;
 use crate::cpu::Cpu;
+use crate::cpu::DecorateExt;
 
 #[derive(Parser)]
 #[clap(about, version, author)]
@@ -491,7 +492,7 @@ impl GBC {
 
                 let instr = decoder.decode(&mut reader).unwrap();
                 eprintln!("  {:?}", &mem_map.cart);
-                eprintln!("pc={:#04x} {}", self.cpu.pc, instr);
+                eprintln!("pc={:#04x} {}", self.cpu.pc, instr.decorate(&self.cpu, &mem_map));
                 eprintln!("  {:?}", instr);
             }
 

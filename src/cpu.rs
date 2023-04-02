@@ -1037,3 +1037,242 @@ mod test {
         }
     }
 }
+
+
+pub(crate) struct DecoratedInstruction<'instr, 'data> {
+    cpu: &'instr Cpu,
+    memory: &'instr MemoryMapping<'data>,
+    inst: &'instr yaxpeax_sm83::Instruction,
+}
+
+pub(crate) trait DecorateExt {
+    fn decorate<'instr, 'data>(&'instr self, cpu: &'instr Cpu, memory: &'instr MemoryMapping<'data>) -> DecoratedInstruction<'instr, 'data>;
+}
+
+impl DecorateExt for yaxpeax_sm83::Instruction {
+    fn decorate<'instr, 'data>(&'instr self, cpu: &'instr Cpu, memory: &'instr MemoryMapping<'data>) -> DecoratedInstruction<'instr, 'data> {
+        DecoratedInstruction {
+            cpu,
+            memory,
+            inst: self
+        }
+    }
+}
+
+enum DecoratedOperand {
+    Register(&'static str),
+    Deref(String, Option<String>),
+    Imm(String),
+    Rel(String, String),
+    Cond(&'static str),
+}
+
+impl fmt::Display for DecoratedOperand {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            DecoratedOperand::Register(r) => {
+                f.write_str(r)
+            }
+            DecoratedOperand::Deref(addr, addr_name) => {
+                f.write_str("[")?;
+                f.write_str(&addr)?;
+                if let Some(addr_name) = addr_name {
+                    f.write_str(" (")?;
+                    f.write_str(addr_name)?;
+                    f.write_str(")")?;
+                }
+                f.write_str("]")?;
+                Ok(())
+            }
+            DecoratedOperand::Imm(i) => {
+                f.write_str(i)
+            }
+            DecoratedOperand::Rel(addr, dest) => {
+                write!(f, "{} ({})", addr, dest)
+            }
+            DecoratedOperand::Cond(cond) => {
+                f.write_str(cond)
+            }
+        }
+    }
+}
+
+fn addr_name_lookup(addr: u16) -> Option<&'static str> {
+    match addr {
+        0xff00 => Some("JOYP"),
+        0xff04 => Some("DIV"),
+        0xff0f => Some("IF"),
+        0xff0f => Some("IE"),
+        0xff30 => Some("WAVE"),
+        0xff40 => Some("LCDC"),
+        0xff41 => Some("STAT"),
+        0xff42 => Some("SCY"),
+        0xff43 => Some("SCX"),
+        0xff44 => Some("LY"),
+        0xff45 => Some("LYC"),
+        0xff4d => Some("KEY1"),
+        0xff4f => Some("VBK"),
+        0xff50 => Some("BANK"),
+        0xff70 => Some("SVBK"),
+        _ => None,
+    }
+}
+
+use yaxpeax_sm83::Operand;
+impl<'instr, 'data> DecoratedInstruction<'instr, 'data> {
+    fn decorate_operand(&self, operand: &Operand) -> DecoratedOperand {
+        match operand {
+            Operand::A => DecoratedOperand::Register("a"),
+            Operand::B => DecoratedOperand::Register("b"),
+            Operand::C => DecoratedOperand::Register("c"),
+            Operand::D => DecoratedOperand::Register("d"),
+            Operand::E => DecoratedOperand::Register("e"),
+            Operand::H => DecoratedOperand::Register("h"),
+            Operand::L => DecoratedOperand::Register("l"),
+            Operand::AF => DecoratedOperand::Register("af"),
+            Operand::BC => DecoratedOperand::Register("bc"),
+            Operand::DE => DecoratedOperand::Register("de"),
+            Operand::HL => DecoratedOperand::Register("hl"),
+            Operand::SP => DecoratedOperand::Register("sp"),
+            Operand::DerefHL => {
+                let v = u16::from_le_bytes(self.cpu.hl);
+                let name = addr_name_lookup(v).map(|x| x.to_owned());
+                let addr_string = format!("${:04x}", v);
+                let text = if let Some(name) = name {
+                    format!("{} ({})", addr_string, name)
+                } else {
+                    addr_string
+                };
+                DecoratedOperand::Deref("hl".to_string(), Some(text))
+            },
+            Operand::DerefBC => {
+                let v = u16::from_le_bytes(self.cpu.bc);
+                let name = addr_name_lookup(v).map(|x| x.to_owned());
+                let addr_string = format!("${:04x}", v);
+                let text = if let Some(name) = name {
+                    format!("{} ({})", addr_string, name)
+                } else {
+                    addr_string
+                };
+                DecoratedOperand::Deref("bc".to_string(), Some(text))
+            },
+            Operand::DerefDE => {
+                let v = u16::from_le_bytes(self.cpu.de);
+                let name = addr_name_lookup(v).map(|x| x.to_owned());
+                let addr_string = format!("${:04x}", v);
+                let text = if let Some(name) = name {
+                    format!("{} ({})", addr_string, name)
+                } else {
+                    addr_string
+                };
+                DecoratedOperand::Deref("de".to_string(), Some(text))
+            },
+            Operand::DerefDecHL => {
+                let v = u16::from_le_bytes(self.cpu.hl);
+                let name = addr_name_lookup(v).map(|x| x.to_owned());
+                let addr_string = format!("${:04x}", v);
+                let text = if let Some(name) = name {
+                    format!("{} ({})", addr_string, name)
+                } else {
+                    addr_string
+                };
+                DecoratedOperand::Deref("hl-".to_string(), Some(text))
+            },
+            Operand::DerefIncHL => {
+                let v = u16::from_le_bytes(self.cpu.hl);
+                let name = addr_name_lookup(v).map(|x| x.to_owned());
+                let addr_string = format!("${:04x}", v);
+                let text = if let Some(name) = name {
+                    format!("{} ({})", addr_string, name)
+                } else {
+                    addr_string
+                };
+                DecoratedOperand::Deref("hl+".to_string(), Some(text))
+            },
+            Operand::DerefHighC => DecoratedOperand::Deref("$ff00 + c".to_string(), None),
+            Operand::DerefHighD8(offs) => {
+                DecoratedOperand::Deref(
+                    format!("$ff00 + ${:02x}", offs),
+                    addr_name_lookup(0xff00 + (*offs as u16)).map(|x| x.to_owned()),
+                )
+            },
+            Operand::SPWithOffset(imm) => {
+                let amt = if *imm == -128 {
+                    "sp - $80".to_string()
+                } else if *imm >= 0 {
+                    format!("sp + ${:02x}", imm)
+                } else {
+                    format!("sp - ${:02x}", -imm)
+                };
+                DecoratedOperand::Deref(amt, None)
+            }
+            Operand::Bit(imm) => {
+                DecoratedOperand::Imm(format!("{}", imm))
+            },
+            Operand::D8(imm) => {
+                DecoratedOperand::Imm(format!("${:02x}", imm))
+            },
+            Operand::D16(imm) => {
+                DecoratedOperand::Imm(format!("${:04x}", imm))
+            },
+            Operand::I8(imm) => {
+                let amt = if *imm == -128 {
+                    format!("-0x80")
+                } else if *imm >= 0 {
+                    format!("${:02x}", imm)
+                } else {
+                    format!("-${:02x}", -imm)
+                };
+                DecoratedOperand::Imm(amt)
+            }
+            Operand::R8(imm) => {
+                let amt = if *imm == -128 {
+                    format!("$-0x80")
+                } else if *imm >= 0 {
+                    format!("$+${:02x}", imm)
+                } else {
+                    format!("$-${:02x}", -imm)
+                };
+                let dest = (self.cpu.pc + self.inst.length() as u16).wrapping_add(*imm as i16 as u16);
+                DecoratedOperand::Rel(amt, format!("${:04x}", dest))
+            }
+            Operand::A16(addr) => {
+                DecoratedOperand::Deref(
+                    format!("[${:4x}]", addr),
+                    None,
+                )
+            },
+
+            Operand::CondC => DecoratedOperand::Cond("C"),
+            Operand::CondNC => DecoratedOperand::Cond("nC"),
+            Operand::CondZ => DecoratedOperand::Cond("Z"),
+            Operand::CondNZ => DecoratedOperand::Cond("nZ"),
+
+            Operand::Nothing => {
+                unreachable!("operand::nothing");
+            }
+        }
+    }
+}
+
+impl<'instr, 'data> fmt::Display for DecoratedInstruction<'instr, 'data> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.inst.opcode())?;
+
+        let ops = self.inst.operands();
+        if ops[0] != Operand::Nothing {
+            f.write_str(" ")?;
+        } else {
+            return Ok(());
+        }
+        write!(f, "{}", self.decorate_operand(&ops[0]))?;
+        if ops[1] != Operand::Nothing {
+            f.write_str(", ")?;
+        } else {
+            return Ok(());
+        }
+        write!(f, "{}", self.decorate_operand(&ops[1]))?;
+
+        Ok(())
+    }
+}
