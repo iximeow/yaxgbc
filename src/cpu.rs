@@ -1237,9 +1237,10 @@ impl<'instr, 'data> DecoratedInstruction<'instr, 'data> {
                 DecoratedOperand::Rel(amt, format!("${:04x}", dest))
             }
             Operand::A16(addr) => {
+                let name = addr_name_lookup(*addr).map(|x| x.to_owned());
                 DecoratedOperand::Deref(
-                    format!("[${:4x}]", addr),
-                    None,
+                    format!("${:4x}", addr),
+                    name,
                 )
             },
 
