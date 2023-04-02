@@ -865,7 +865,7 @@ impl MemoryBanks for MBC5 {
             }
             let addr = self.translate_address(addr);
             debug_assert!(addr.segment == SEGMENT_RAM);
-            self.rom[addr.address as usize] = value;
+            self.ram[addr.address as usize] = value;
         } else {
             eprintln!("bad cart access at {:#04x}", addr);
         }
