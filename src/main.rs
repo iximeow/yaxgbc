@@ -202,21 +202,32 @@ impl<'a> fmt::Debug for MemoryMapping<'a> {
 }
 
 impl MemoryBanks for MemoryMapping<'_> {
-    fn load(&self, addr: u16) -> u8 {
+    fn translate_address(&self, addr: u16) -> MemoryAddress {
         if addr < 0x4000 {
-            if self.verbose && addr >= 0x104 && addr < 0x144 {
-                eprintln!("loading from ${:04x} (${:02x})", addr, self.cart.load(addr));
+            MemoryAddress {
+                segment: SEGMENT_CART,
+                address: addr as u32,
             }
-            self.cart.load(addr)
         } else if addr < 0x8000 {
-            self.cart.load(addr)
+            MemoryAddress {
+                segment: SEGMENT_CART,
+                address: addr as u32,
+            }
         } else if addr < 0xa000 {
             let offset = 0x2000 * (self.management_bits[VBK] as usize & 0b1);
-            self.vram[addr as usize - 0x8000 + offset]
+            let addr = addr as usize - 0x8000 + offset;
+            MemoryAddress {
+                segment: SEGMENT_VRAM,
+                address: addr as u32,
+            }
         } else if addr < 0xc000 {
-            self.cart.load(addr)
+            MemoryAddress {
+                segment: SEGMENT_CART,
+                address: addr as u32,
+            }
         } else if addr < 0xd000 {
-            self.ram[addr as usize - 0xc000]
+            let addr = addr as usize - 0xc000;
+            MemoryAddress::ram(addr as u32)
         } else if addr < 0xe000 {
             let nr = self.management_bits[SVBK] as usize & 0b111;
             let nr = if nr == 0 {
@@ -224,49 +235,74 @@ impl MemoryBanks for MemoryMapping<'_> {
             } else {
                 nr
             };
-            self.ram[(addr as usize - 0xc000) + nr * 0x1000]
+            let addr = (addr as usize - 0xc000) + nr * 0x1000;
+            MemoryAddress::ram(addr as u32)
         } else if addr < 0xfe00 {
             // aliases [c000,ddff]
-            self.ram[addr as usize - 0xe000]
-        } else if addr < 0xfea0 {
-            // sprite attribute table
-            self.management_bits[addr as usize - 0xfe00]
-        } else if addr < 0xff00 {
-            // "not usable"
-            self.management_bits[addr as usize - 0xfe00]
-        } else if addr < 0xff80 {
-            // "i/o ports"
-            let reg = addr as usize - 0xfe00;
-            let v = if reg == VBK {
-                // "Reading from this register will return the number of the currently loaded VRAM
-                // bank in bit 0, and all other bits will be set to 1."
-                (self.management_bits[VBK] & 1) | 0b1111_1110
-            } else if reg == IF {
-                let v = self.management_bits[reg];
-                if self.verbose {
-                    eprintln!("getting IF=${:02x}", v);
-                }
-                v
-            } else if reg == IE {
-                let v = self.management_bits[reg];
-                if self.verbose {
-                    eprintln!("getting IE=${:02x}", v);
-                }
-                v
-            } else {
-                let v = self.management_bits[reg];
-                if self.verbose {
-                    eprintln!("get ${:04x} (=${:02x})", addr, v);
-                }
-                v
-            };
-            v
-        } else if addr < 0xffff {
-            // "high ram (HRAM)"
-            self.management_bits[addr as usize - 0xfe00]
+            let addr = addr as usize - 0xe000;
+            MemoryAddress::ram(addr as u32)
         } else {
-            // "interrupt enable register"
-            self.management_bits[addr as usize - 0xfe00]
+            let addr = addr - 0xfe00;
+            MemoryAddress::management(addr as u32)
+        }
+    }
+    fn load(&self, addr: u16) -> u8 {
+        let addr = self.translate_address(addr);
+        match addr {
+            MemoryAddress { segment: SEGMENT_CART, address } => {
+                assert!(address < 0x10000);
+                self.cart.load(address as u16)
+            },
+            MemoryAddress { segment: SEGMENT_VRAM, address } => {
+                self.vram[address as usize]
+            }
+            MemoryAddress { segment: SEGMENT_RAM, address } => {
+                self.ram[address as usize]
+            }
+            MemoryAddress { segment: SEGMENT_MANAGEMENT, address } => {
+                if address < 0x0a0 {
+                    // sprite attribute table
+                    self.management_bits[address as usize]
+                } else if address < 0x100 {
+                    // "not usable"
+                    self.management_bits[address as usize]
+                } else if address < 0x180 {
+                    let reg = address as usize;
+                    let v = if reg == VBK {
+                        // "Reading from this register will return the number of the currently loaded VRAM
+                        // bank in bit 0, and all other bits will be set to 1."
+                        (self.management_bits[VBK] & 1) | 0b1111_1110
+                    } else if reg == IF {
+                        let v = self.management_bits[reg];
+                        if self.verbose {
+                            eprintln!("getting IF=${:02x}", v);
+                        }
+                        v
+                    } else if reg == IE {
+                        let v = self.management_bits[reg];
+                        if self.verbose {
+                            eprintln!("getting IE=${:02x}", v);
+                        }
+                        v
+                    } else {
+                        let v = self.management_bits[reg];
+                        if self.verbose {
+                            eprintln!("get ${:04x} (=${:02x})", address, v);
+                        }
+                        v
+                    };
+                    v
+                } else if address < 0x1ff {
+                    // "high ram (HRAM)"
+                    self.management_bits[address as usize]
+                } else {
+                    // "interrupt enable register"
+                    self.management_bits[address as usize]
+                }
+            }
+            other => {
+                unreachable!("impossible address: {other}");
+            }
         }
     }
 
@@ -669,9 +705,53 @@ struct GBCCart {
     mapper: Box<dyn MemoryBanks>,
 }
 
+struct MemoryAddress {
+    segment: u8,
+    address: u32,
+}
+
+impl fmt::Display for MemoryAddress {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "MemoryAddress {{ segment: {}, address: {:#04x} }}",
+            self.segment,
+            self.address
+        )
+    }
+}
+
+impl MemoryAddress {
+    fn ram(address: u32) -> Self {
+        MemoryAddress {
+            segment: SEGMENT_RAM,
+            address,
+        }
+    }
+    fn rom(address: u32) -> Self {
+        MemoryAddress {
+            segment: SEGMENT_ROM,
+            address,
+        }
+    }
+    fn management(address: u32) -> Self {
+        MemoryAddress {
+            segment: SEGMENT_MANAGEMENT,
+            address,
+        }
+    }
+}
+
+const SEGMENT_ROM: u8 = 0;
+const SEGMENT_RAM: u8 = 1;
+const SEGMENT_MANAGEMENT: u8 = 2;
+const SEGMENT_VRAM: u8 = 3;
+const SEGMENT_CART: u8 = 4;
+
 trait MemoryBanks: fmt::Debug {
     fn load(&self, addr: u16) -> u8;
     fn store(&mut self, addr: u16, value: u8);
+    fn translate_address(&self, addr: u16) -> MemoryAddress;
 }
 
 #[derive(Debug)]
@@ -685,20 +765,37 @@ struct MBC3 {
 
 impl MemoryBanks for MBC3 {
     fn load(&self, addr: u16) -> u8 {
+        let addr = self.translate_address(addr);
+        match addr {
+            MemoryAddress { segment: SEGMENT_ROM, address } => {
+                self.rom[address as usize]
+            }
+            MemoryAddress { segment: SEGMENT_RAM, address } => {
+                self.ram[address as usize]
+            }
+            other => {
+                panic!("invalid address? {other}");
+            }
+        }
+    }
+
+    fn translate_address(&self, addr: u16) -> MemoryAddress {
         if addr <= 0x3fff {
-            self.rom[addr as usize]
+            MemoryAddress::rom(addr as u32)
         } else if addr < 0x7fff {
             let bank = u16::from_le_bytes(self.rom_bank) as usize;
-            self.rom[addr as usize - 0x4000 + bank * 0x4000]
+            let addr = addr as usize - 0x4000 + bank * 0x4000;
+            MemoryAddress::rom(addr as u32)
         } else if addr < 0xa000 {
             eprintln!("bad cart access at {:#04x}", addr);
-            0
+            MemoryAddress::rom(0)
         } else if addr < 0xc000 {
             let bank = self.ram_bank as usize;
-            self.ram[addr as usize - 0xa000 + bank * 0x2000]
+            let addr = addr as usize - 0xa000 + bank * 0x2000;
+            MemoryAddress::ram(addr as u32)
         } else {
             eprintln!("bad cart access at {:#04x}", addr);
-            0
+            MemoryAddress::rom(0)
         }
     }
     fn store(&mut self, _addr: u16, _value: u8) {}
@@ -720,20 +817,37 @@ impl fmt::Debug for MBC5 {
 
 impl MemoryBanks for MBC5 {
     fn load(&self, addr: u16) -> u8 {
+        let addr = self.translate_address(addr);
+        match addr {
+            MemoryAddress { segment: SEGMENT_ROM, address } => {
+                self.rom[address as usize]
+            }
+            MemoryAddress { segment: SEGMENT_RAM, address } => {
+                self.ram[address as usize]
+            }
+            other => {
+                panic!("invalid address? {other}");
+            }
+        }
+    }
+
+    fn translate_address(&self, addr: u16) -> MemoryAddress {
         if addr <= 0x3fff {
-            self.rom[addr as usize]
+            MemoryAddress::rom(addr as u32)
         } else if addr < 0x7fff {
             let bank = u16::from_le_bytes(self.rom_bank) as usize;
-            self.rom[addr as usize - 0x4000 + bank * 0x4000]
+            let addr = addr as usize - 0x4000 + bank * 0x4000;
+            MemoryAddress::rom(addr as u32)
         } else if addr < 0xa000 {
             eprintln!("bad cart access at {:#04x}", addr);
-            0
+            MemoryAddress::rom(0)
         } else if addr < 0xc000 {
             let bank = self.ram_bank as usize;
-            self.ram[addr as usize - 0xa000 + bank * 0x2000]
+            let addr = addr as usize - 0xa000 + bank * 0x2000;
+            MemoryAddress::ram(addr as u32)
         } else {
             eprintln!("bad cart access at {:#04x}", addr);
-            0
+            MemoryAddress::rom(0)
         }
     }
     fn store(&mut self, addr: u16, value: u8) {
@@ -749,8 +863,9 @@ impl MemoryBanks for MBC5 {
             if self.ram_enable & 0x0f != 0x0a {
                 return;
             }
-            let bank = self.ram_bank as usize;
-            self.rom[addr as usize - 0xa000 + bank * 0x2000] = value;
+            let addr = self.translate_address(addr);
+            debug_assert!(addr.segment == SEGMENT_RAM);
+            self.rom[addr.address as usize] = value;
         } else {
             eprintln!("bad cart access at {:#04x}", addr);
         }
@@ -775,7 +890,11 @@ impl FlatMapper {
 
 impl MemoryBanks for FlatMapper {
     fn load(&self, addr: u16) -> u8 {
-        self.rom[addr as usize]
+        let addr = self.translate_address(addr);
+        self.rom[addr.address as usize]
+    }
+    fn translate_address(&self, addr: u16) -> MemoryAddress {
+        MemoryAddress::rom(addr as u32)
     }
     fn store(&mut self, _addr: u16, _value: u8) {}
 }
