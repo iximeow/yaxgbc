@@ -21,6 +21,7 @@ pub(crate) struct Cpu {
     pub speed_mode: u8, // 0=Normal, 1=Double
     // interrupt master enable
     pub ime: bool,
+    pub halted: bool,
     pub verbose: bool,
 }
 
@@ -140,6 +141,11 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
             eprintln!("stopping");
             panic!("");
         }
+        Ok(())
+    }
+
+    fn on_halt(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.cpu.halted = true;
         Ok(())
     }
 
@@ -876,6 +882,7 @@ impl Cpu {
             speed_mode: 0,
             ime: true,
             verbose: true,
+            halted: false,
         }
     }
 
@@ -893,6 +900,39 @@ impl Cpu {
     }
 
     pub fn step<'storage: 'env, 'env>(&'env mut self, memory: &'env mut MemoryMapping<'storage>) -> u16 {
+        if self.halted {
+            // cpu is halted.
+
+            // if interrupts are disabled, we just `halt`ed. wake, advance one
+            // clock, and resume execution (programmers: do not do this).
+            if !self.ime {
+                self.halted = false;
+                return 4;
+            }
+
+            // otherwise, interrupts are enabled, and if none have fired we will remain in
+            // low-power mode (advancing by one clock as the rest of the machine still has to
+            // operate).
+            let interrupts = memory.management_bits[crate::IF as usize] & memory.management_bits[crate::IE as usize];
+            if interrupts == 0 {
+                // no interrupts, remain halted.
+                return 4;
+            } else {
+                // have an interrupt, update state appropriately and wake from halt
+                self.halted = false;
+
+                // interrupt entry itself is essentially a fused `call $isr; di`
+                self.push(memory, self.pc);
+                let interrupt_nr = interrupts.trailing_zeros();
+                assert!(interrupt_nr < 4, "bogus interrupt? {}", interrupt_nr);
+                eprintln!("interrupt {}", interrupt_nr);
+
+                let interrupt_addr = 0x40 + (8 * interrupt_nr) as u16;
+                self.pc = interrupt_addr;
+                // and finally, enter the ISR with interrupts disabled again.
+                self.ime = false;
+            }
+        }
         let mut buf = [
             memory.load(self.pc),
             memory.load(self.pc + 1),
