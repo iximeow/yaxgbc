@@ -850,8 +850,16 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
         Ok(())
     }
     fn on_daa(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> { todo!() }
-    fn on_scf(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> { todo!() }
-    fn on_ccf(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> { todo!() }
+    fn on_scf(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.cpu.af[0] &= 0b1000_0000;
+        self.cpu.af[0] |= 0b0001_0000;
+        Ok(())
+    }
+    fn on_ccf(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.cpu.af[0] &= 0b1000_0000;
+        self.cpu.af[0] ^= 0b0001_0000;
+        Ok(())
+    }
     fn on_ret_unconditional(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
         self.cpu.pc = self.cpu.pop(self.storage);
         Ok(())
