@@ -888,7 +888,14 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
         }
         Ok(())
     }
-    fn on_rst(&mut self, imm: u8) -> Result<(), <SM83 as Arch>::DecodeError> { todo!() }
+    fn on_rst(&mut self, imm: u8) -> Result<(), <SM83 as Arch>::DecodeError> {
+        if imm == 0x38 {
+            panic!("probably bug. do you really mean to run 0xff?");
+        }
+        self.cpu.push(self.storage, self.cpu.pc);
+        self.cpu.pc = imm as u16;
+        Ok(())
+    }
     fn on_reti(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
         self.cpu.pc = self.cpu.pop(self.storage);
         self.cpu.ime = true;
