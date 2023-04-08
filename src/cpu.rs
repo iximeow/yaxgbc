@@ -155,7 +155,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
     }
 
     fn on_ei(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
-        self.cpu.ime = false;
+        self.cpu.ime = true;
         Ok(())
     }
     fn on_ld_r_r(&mut self, dest: Reg8b, src: Reg8b) -> Result<(), <SM83 as Arch>::DecodeError> {
