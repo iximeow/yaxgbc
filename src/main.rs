@@ -1346,6 +1346,9 @@ impl GBCCart {
     }
 
     fn boot_rom(mut boot_rom: Vec<u8>, cart: &GBCCart) -> Self {
+        while boot_rom.len() < 512 {
+            boot_rom.push(0);
+        }
         // copy in the bytes from $104 to $200
         for i in 0x104..0x200 {
             boot_rom[i] = cart.mapper.load(i as u16);
