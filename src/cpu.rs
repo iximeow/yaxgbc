@@ -899,6 +899,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
     fn on_reti(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
         self.cpu.pc = self.cpu.pop(self.storage);
         self.cpu.ime = true;
+        self.clocks += 16;
         Ok(())
     }
 }
