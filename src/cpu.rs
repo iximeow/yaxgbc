@@ -749,8 +749,8 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
         match operand {
             Reg8b::B => { self.cpu.bc[1] = res; }
             Reg8b::C => { self.cpu.bc[0] = res; }
-            Reg8b::D => { self.cpu.hl[1] = res; }
-            Reg8b::E => { self.cpu.hl[0] = res; }
+            Reg8b::D => { self.cpu.de[1] = res; }
+            Reg8b::E => { self.cpu.de[0] = res; }
             Reg8b::H => { self.cpu.hl[1] = res; }
             Reg8b::L => { self.cpu.hl[0] = res; }
             Reg8b::DerefHL => { self.storage.store(u16::from_le_bytes(self.cpu.hl), res) }
@@ -1108,6 +1108,31 @@ mod test {
             result.hl = [0x98, 0x00];
             result.pc += 3;
             super::execute_test(&mut cpu, &[0x21, 0x98, 0x00]);
+
+            assert_eq!(cpu, result);
+        }
+
+        #[test]
+        fn test_rotate() {
+            let mut cpu = Cpu::new();
+            cpu.bc[0] = 0x01;
+            cpu.af[0] = 0x00;
+            let mut result = cpu.clone();
+            result.bc[0] = 0x00;
+            result.af[0] = 0x90;
+            result.pc += 2;
+            super::execute_test(&mut cpu, &[0xcb, 0x19]);
+
+            assert_eq!(cpu, result);
+
+            let mut cpu = Cpu::new();
+            cpu.de[1] = 0x01;
+            cpu.af[0] = 0x00;
+            let mut result = cpu.clone();
+            result.de[1] = 0x00;
+            result.af[0] = 0x90;
+            result.pc += 2;
+            super::execute_test(&mut cpu, &[0xcb, 0x1a]);
 
             assert_eq!(cpu, result);
         }
