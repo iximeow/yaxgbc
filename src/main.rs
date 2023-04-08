@@ -160,6 +160,7 @@ struct Lcd {
     oam_scan_items: Vec<OamItem>,
     oam: [u8; 0xa0],
     background_pixels: Vec<u8>,
+    oam_pixels: [Option<u8>; 160],
     display: Box<[u8; 144 * 160]>
 }
 
@@ -188,6 +189,7 @@ impl Lcd {
             oam_scan_items: Vec::new(),
             oam: [0u8; 0xa0],
             background_pixels: Vec::new(),
+            oam_pixels: [None; 160],
             display: Box::new([0u8; 144 * 160]),
         }
     }
@@ -300,8 +302,14 @@ impl Lcd {
                 for px in 0..self.background_pixels.len() {
                     assert!(self.background_pixels.len() == 160);
                     self.display[self.ly as usize * 160 + px] = self.background_pixels[px];
+                    if let Some(sprite_px) = self.oam_pixels[px] {
+                        if sprite_px != 0 {
+                            self.display[self.ly as usize * 160 + px] = sprite_px;
+                        }
+                    }
                 }
-//                self.background_pixels.clear();
+                self.background_pixels.clear();
+                self.oam_pixels = [None; 160];
             }
 
             self.current_line_start += (line_time / Self::LINE_TIME) * Self::LINE_TIME;
@@ -360,6 +368,42 @@ impl Lcd {
                     while self.oam_scan_items.len() > 10 {
                         self.oam_scan_items.pop();
                     }
+                    for item in self.oam_scan_items.iter() {
+                        if item.x >= 168 {
+                            continue;
+                        }
+                        let bank = ((item.oam_flags & 0b0000_1000) >> 3) as usize * 0x2000;
+                        let oam_tile_addr = bank + item.tile_index as usize * 16;
+                        let (tile_row_lo, tile_row_hi) = if self.lcdc & 0b100 == 0 || item.selected_line < 8 {
+                            let tile_line = item.selected_line;
+                            let oam_tile_data = &vram[oam_tile_addr..][..16];
+                            let lo = oam_tile_data[tile_line as usize * 2];
+                            let hi = oam_tile_data[tile_line as usize * 2 + 1];
+                            (lo, hi)
+                        } else {
+                            let tile_line = item.selected_line - 8;
+                            let oam_tile_data = &vram[oam_tile_addr + 16..][..16];
+                            let lo = oam_tile_data[tile_line as usize * 2];
+                            let hi = oam_tile_data[tile_line as usize * 2 + 1];
+                            (lo, hi)
+                        };
+
+                        for x in 0..8 {
+                            let x_addr = x as i32 + (item.x as i32 - 8);
+                            if x_addr < 0 || x_addr >= 160 {
+                                continue;
+                            }
+
+                            let px =
+                                (((tile_row_hi >> (7 - x)) & 1) << 1) |
+                                (((tile_row_lo >> (7 - x)) & 1) << 0);
+
+                            if px != 0 {
+                                self.oam_pixels[x_addr as usize] = Some(px);
+                            }
+                        }
+                    }
+
     //                eprintln!("{} sprites to draw", self.oam_scan_items.len());
                     self.background_pixels.clear();
                     let tile_base = self.background_tile_base();
