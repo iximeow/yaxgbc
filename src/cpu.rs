@@ -899,7 +899,6 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
     fn on_reti(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
         self.cpu.pc = self.cpu.pop(self.storage);
         self.cpu.ime = true;
-//        return 16;
         Ok(())
     }
 }
@@ -1050,12 +1049,15 @@ mod test {
         }
 
         let mut rom = FlatMapper::new(rom.into_boxed_slice());
+        let mut lcd = crate::Lcd::new();
         let mut memory = MemoryMapping {
             cart: &mut rom,
             ram: &mut [],
             vram: &mut [],
+            lcd: &mut lcd,
             management_bits: &mut [],
             verbose: false,
+            dma_requested: false,
         };
         cpu.step(&mut memory);
     }

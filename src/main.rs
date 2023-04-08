@@ -1,6 +1,11 @@
 use clap::Parser;
 
 use std::fmt;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::fmt::Write;
+use std::time::Duration;
+use std::time::SystemTime;
 
 use yaxpeax_arch::{Decoder, ReadError};
 
@@ -12,6 +17,85 @@ use crate::cpu::DecorateExt;
 #[clap(about, version, author)]
 struct Args {
     file: String
+}
+
+fn do_ui(gb_state: Arc<Mutex<GBC>>) {
+    loop {
+        let mut gb = gb_state.lock().unwrap();
+        // paint screen
+        let mut screen = String::new();
+
+        // dump tile data as just some kind of guess...
+        println!("!!!frame!!!");
+        println!("ie: {}", gb.management_bits[IE]);
+        println!("if: {}", gb.management_bits[IF]);
+        println!("scy: {}", gb.management_bits[SCY]);
+        println!("scx: {}", gb.management_bits[SCX]);
+        println!("lcdc: {:08b}", gb.lcd.lcdc);
+        println!("stat: {:08b}", gb.management_bits[STAT]);
+        let vbk = gb.management_bits[VBK];
+        let tilemap_base = gb.lcd.background_tile_base() as usize;
+        println!("vbk: {:08b}", vbk);
+        let vram = &gb.vram;
+        for i in 0..18 {
+            for j in 0..20 {
+                print!(" {:02x}", vram[(i * 32 + j) + tilemap_base]);
+            }
+            println!("");
+        }
+        println!("and attrs:");
+        for i in 0..18 {
+            for j in 0..20 {
+                print!(" {:02x}", vram[(i * 32 + j) + tilemap_base + 0x2000]);
+            }
+            println!("");
+        }
+        println!("");
+
+        // eprintln!("{:?}", &vram[0..0x1800]);
+
+        /*
+        if gb.lcd.window_enable() {
+            for i in 0..1024 {
+                // .. try windows too
+                let tile_base = gb.lcd.window_tile_base();
+                if i % 32 == 0 {
+                    eprintln!("");
+                }
+                eprint!("{:02x}", vram[tile_base as usize + i]);
+            }
+            eprintln!("");
+        }
+        */
+        const PXMAP: [&'static str; 16] = [
+            ".", "▖", "▗", "▄", "▘", "▌", "▚", "▙", "▝", "▞", "▐", "▟", "▀", "▛", "▜", "▓",
+        ];
+
+        for i in 0..72 {
+            let i = i * 2;
+            for j in 0..80 {
+                let j = j * 2;
+                let ul = (gb.lcd.display[((i + 0) * 160) + j + 0] > 0) as u8 * 4;
+                let ur = (gb.lcd.display[((i + 0) * 160) + j + 1] > 0) as u8 * 8;
+                let ll = (gb.lcd.display[((i + 1) * 160) + j + 0] > 0) as u8 * 1;
+                let lr = (gb.lcd.display[((i + 1) * 160) + j + 1] > 0) as u8 * 2;
+                let idx = ur | ul | lr | ll;
+                write!(screen, "{}", PXMAP[idx as usize]);
+            }
+            write!(screen, "\n");
+        }
+        /*
+        for i in 0..144 {
+            for j in 0..160 {
+                write!(screen, "{}", [".", "+", "*", "#"][gb.lcd.display[(i * 160 + j) as usize] as usize]);
+            }
+            write!(screen, "\n");
+        }
+        */
+        println!("{}", screen);
+        std::mem::drop(gb);
+        std::thread::sleep(std::time::Duration::from_millis(33));
+    }
 }
 
 fn main() {
@@ -27,12 +111,45 @@ fn main() {
 
     gb.set_cart(cart);
 
-    gb.run();
+    let sins = Arc::new(Mutex::new(gb));
+
+    let sins_ref = Arc::clone(&sins);
+
+    std::thread::spawn(|| {
+        do_ui(sins_ref)
+    });
+
+    let mut i = 0;
+    loop {
+        let frame_target = SystemTime::now() + Duration::from_millis(16);
+
+        let mut gb = sins.lock().unwrap();
+        let vblank_before = gb.management_bits[IF] & 1;
+
+        gb.run();
+
+        let vblank_after = gb.management_bits[IF] & 1;
+        std::mem::drop(gb);
+
+        let vblank_fired = vblank_before == 0 && vblank_after == 1;
+
+        let now = SystemTime::now();
+
+//        if (vblank_fired && now < frame_target) || (i % 655360 == 655300) {
+//            std::thread::sleep(frame_target.duration_since(now).unwrap());
+//            i = 0;
+//        }
+        if i % 4 == 0 {
+            std::thread::sleep(Duration::from_micros(1));
+        }
+        i += 1;
+    }
 }
 
 struct Lcd {
     // HBlank, VBlank, Searching OAM, Transferring Data to LCD Controller
     mode: u8,
+    lcdc: u8,
     ly: u8,
     lcd_clock: u64,
     current_line_start: u64,
@@ -40,6 +157,17 @@ struct Lcd {
     // when, in dots, we'll be at the next line. this is the end of the current line's HBlank.
     next_line: u64,
     next_draw_time: u64,
+    oam_scan_items: Vec<OamItem>,
+    oam: [u8; 0xa0],
+    background_pixels: Vec<u8>,
+    display: Box<[u8; 144 * 160]>
+}
+
+struct OamItem {
+    selected_line: u8,
+    x: u8,
+    tile_index: u8,
+    oam_flags: u8,
 }
 
 impl Lcd {
@@ -50,18 +178,102 @@ impl Lcd {
     fn new() -> Self {
         Self {
             mode: 1,
+            lcdc: 0,
             ly: 0,
             lcd_clock: 0,
             current_line_start: 0,
             current_draw_start: 0,
             next_line: Self::LINE_TIME,
             next_draw_time: Self::SCREEN_TIME,
+            oam_scan_items: Vec::new(),
+            oam: [0u8; 0xa0],
+            background_pixels: Vec::new(),
+            display: Box::new([0u8; 144 * 160]),
         }
+    }
+
+    fn tile_lookup_by_nr<'a>(&self, vram: &'a [u8], tile_nr: u16) -> &'a [u8] {
+        // look up the tile number in vram bank 0
+        // then attrs for that tile number in vram bank 1
+        //
+        // tile attrs can pick between vram banks 0 and 1 for tile data itself, so we need both to
+        // find the right data.
+        let tile_map_base = self.background_tile_base() as usize;
+        let tile_id = vram[tile_map_base + tile_nr as usize];
+        let tile_attrs = vram[tile_map_base + tile_nr as usize + 0x2000];
+
+        let mut tile_data_addr = self.tile_addr_translate(tile_id);
+
+        if tile_attrs & 0b0000_1000 != 0 {
+            tile_data_addr += 0x2000;
+        }
+
+        &vram[tile_data_addr..][..16]
+    }
+    fn tile_addr_translate<'a>(&self, tile_id: u8) -> usize {
+        let data_offset = if self.lcdc & 0b0001_0000 == 0 {
+            let addr = (((tile_id as i8).wrapping_add(-0x80)) as u8 as u16 * 16);
+            0x800 + addr as usize
+        } else {
+            tile_id as usize * 16
+        };
+        data_offset
+    }
+
+    fn background_tile_base(&self) -> u16 {
+        if self.lcdc & 0b0000_1000 == 0 {
+            0x1800
+        } else {
+            0x1c00
+        }
+    }
+
+    fn window_tile_base(&self) -> u16 {
+        if self.lcdc & 0b0100_0000 == 0 {
+            0x1800
+        } else {
+            0x1c00
+        }
+    }
+
+    fn on(&self) -> bool {
+        self.lcdc & 0b1000_0000 != 0
+    }
+
+    fn window_enable(&self) -> bool {
+        self.lcdc & 0b0010_0000 != 0
+    }
+
+    fn sprite_double_size(&self) -> bool {
+        self.lcdc & 0b0000_0100 != 0
+    }
+
+    fn sprite_enable(&self) -> bool {
+        self.lcdc & 0b0000_0010 != 0
+    }
+
+    fn set_lcdc(&mut self, new_lcdc: u8) {
+        if self.mode != 1 {
+            eprintln!("TODO: allowed to set lcdc bits outside mode 1?");
+        }
+        self.lcdc = new_lcdc;
+    }
+
+    fn load(&self, address: u16) -> u8 {
+        // TODO: if we're in a mode where you can read OAM, allow it, otherwise return $ff
+        assert!(address < self.oam.len() as u16, "invalid oam load address: {:#02x}", address);
+        self.oam[address as usize]
+    }
+
+    fn store(&mut self, address: u16, value: u8) {
+        // TODO: if we're in a mode where you can write OAM, allow it, otherwise ignore write
+        assert!(address < self.oam.len() as u16, "invalid oam store address: {:#02x}", address);
+        self.oam[address as usize] = value
     }
 
     // advance lcd state by `clocks` ticks, using `lcd_stat` to determine if we should generate an
     // interrupt.
-    fn advance_clock(&mut self, lcd_stat: u8, lyc: u8, clocks: u64) -> (bool, bool) {
+    fn advance_clock(&mut self, vram: &[u8], lcd_stat: u8, lyc: u8, clocks: u64, scx: u8, scy: u8) -> (bool, bool) {
         // the number of dots (LCD clocks) to display one line. `HBlank` is whatever time is
         // necessary to meet this time, after completing mode 3.
         self.lcd_clock = self.lcd_clock.wrapping_add(clocks);
@@ -83,7 +295,15 @@ impl Lcd {
 
         if line_time > Self::LINE_TIME {
             // ok, line's done and we're resetting to mode 2 (exiting mode 0)
-//            eprintln!("line {} done", self.ly);
+            // eprintln!("line {} done", self.ly);
+            if self.ly < 144 {
+                for px in 0..self.background_pixels.len() {
+                    assert!(self.background_pixels.len() == 160);
+                    self.display[self.ly as usize * 160 + px] = self.background_pixels[px];
+                }
+//                self.background_pixels.clear();
+            }
+
             self.current_line_start += (line_time / Self::LINE_TIME) * Self::LINE_TIME;
             self.ly += 1;
             line_time -= line_time % Self::LINE_TIME;
@@ -106,12 +326,67 @@ impl Lcd {
             (true, should_interrupt)
         } else {
             if line_time < 80 {
+                let prior_mode = self.mode;
                 if self.mode != 2 && (lcd_stat & 0b0100_0000 != 0) {
                     should_interrupt = true;
                 }
                 self.mode = 2;
-                // do mode 2 work. if any? probably not.. we'll see how much time the OAM scan takes
-                // later.
+
+                if prior_mode != self.mode {
+                    // do a full OAM scan up front. there might be benefits to driving the OAM reads in
+                    // a more cycle-accurate manner, but i'm skimping on that for now.
+                    self.oam_scan_items.clear();
+                    for i in 0..40 {
+                        let object_addr = 4 * i;
+                        let y_end = self.oam[object_addr + 0];
+                        let x_end = self.oam[object_addr + 1];
+
+                        // TODO: respect LCDC.2 for double-height sprites
+                        let sprite_height = 8;
+
+                        let selected_line = self.ly as i16 - ((y_end as i16) - 16);
+                        if selected_line < 0 || selected_line > sprite_height {
+                            continue;
+                        }
+
+                        self.oam_scan_items.push(OamItem {
+                            selected_line: selected_line as u8,
+                            x: x_end,
+                            tile_index: self.oam[object_addr + 2],
+                            oam_flags: self.oam[object_addr + 3],
+                        });
+                    }
+                    self.oam_scan_items.sort_by_key(|item| item.x);
+                    while self.oam_scan_items.len() > 10 {
+                        self.oam_scan_items.pop();
+                    }
+    //                eprintln!("{} sprites to draw", self.oam_scan_items.len());
+                    self.background_pixels.clear();
+                    let tile_base = self.background_tile_base();
+//                    eprintln!("tile base: {:04x}", tile_base);
+//                    eprintln!("tile y: {}.{}", self.ly / 8, self.ly % 8);
+                    let background_y = scy + self.ly;
+                    let background_x = scx + 0;
+                    let tile_y = (background_y / 8) as u16;
+                    let tile_yoffs = background_y as u16 % 8;
+                    for i in 0..160 {
+                        // NOTE: if the screen is scrolled such that x would overflow past the end
+                        // of the tile map, x waps back around to the left. i think.
+                        let line_x = i + background_x;
+                        let tile_x = (line_x / 8) as u16;
+                        let tile_nr = tile_y * 32 + tile_x;
+                        let tile_data = self.tile_lookup_by_nr(vram, tile_nr);
+                        let tile_xoffs = i % 8;
+                        let tile_row_lo = tile_data[tile_yoffs as usize * 2];
+                        let tile_row_hi = tile_data[tile_yoffs as usize * 2 + 1];
+                        let px =
+                            (((tile_row_hi >> (7 - tile_xoffs)) & 1) << 1) |
+                            (((tile_row_lo >> (7 - tile_xoffs)) & 1) << 0);
+
+                        self.background_pixels.push(px);
+                    }
+                    assert_eq!(self.background_pixels.len(), 160);
+                }
             } else if line_time < 80 + 168 {
                 // the exact timing here depends on how many OBJs were found. 168 is a minimum.
                 self.mode = 3;
@@ -171,6 +446,12 @@ impl yaxpeax_arch::Reader<u16, u8> for BankReader<'_> {
     }
 }
 
+struct GBCScreen {
+    buf: Box<[u8; 1024]>,
+    mode: u8,
+    ly: u8,
+}
+
 struct GBC {
     cpu: Cpu,
     lcd: Lcd,
@@ -182,7 +463,6 @@ struct GBC {
     management_bits: [u8; 0x200],
     clock: u64,
     next_div_tick: u64,
-//    screen: Rc<GBCScreen>,
 //    audio: Rc<GBCAudio>,
     verbose: bool,
 }
@@ -191,8 +471,10 @@ struct MemoryMapping<'system> {
     cart: &'system mut dyn MemoryBanks,
     ram: &'system mut [u8],
     vram: &'system mut [u8],
+    lcd: &'system mut Lcd,
     management_bits: &'system mut [u8],
     verbose: bool,
+    dma_requested: bool,
 }
 
 impl<'a> fmt::Debug for MemoryMapping<'a> {
@@ -241,6 +523,11 @@ impl MemoryBanks for MemoryMapping<'_> {
             // aliases [c000,ddff]
             let addr = addr as usize - 0xe000;
             MemoryAddress::ram(addr as u32)
+        } else if addr < 0xfea0 {
+            MemoryAddress {
+                segment: SEGMENT_OAM,
+                address: (addr - 0xfe00) as u32,
+            }
         } else {
             let addr = addr - 0xfe00;
             MemoryAddress::management(addr as u32)
@@ -259,6 +546,9 @@ impl MemoryBanks for MemoryMapping<'_> {
             MemoryAddress { segment: SEGMENT_RAM, address } => {
                 self.ram[address as usize]
             }
+            MemoryAddress { segment: SEGMENT_OAM, address } => {
+                self.lcd.load(address as u16)
+            },
             MemoryAddress { segment: SEGMENT_MANAGEMENT, address } => {
                 if address < 0x0a0 {
                     // sprite attribute table
@@ -284,6 +574,11 @@ impl MemoryBanks for MemoryMapping<'_> {
                             eprintln!("getting IE=${:02x}", v);
                         }
                         v
+                    } else if reg == LCDC {
+                        if self.verbose {
+                            eprintln!("getting LCDC=${:02x}", self.lcd.lcdc);
+                        }
+                        self.lcd.lcdc
                     } else {
                         let v = self.management_bits[reg];
                         if self.verbose {
@@ -330,7 +625,7 @@ impl MemoryBanks for MemoryMapping<'_> {
             self.ram[addr as usize - 0xe000] = value;
         } else if addr < 0xfea0 {
             // sprite attribute table
-            self.management_bits[addr as usize - 0xfe00] = value;
+            self.lcd.store(addr as u16 - 0xfe00, value);
         } else if addr < 0xff00 {
             // "not usable"
             self.management_bits[addr as usize - 0xfe00] = value;
@@ -352,6 +647,20 @@ impl MemoryBanks for MemoryMapping<'_> {
                 if self.verbose {
                     eprintln!("setting IE=${:02x}", value);
                 }
+                self.management_bits[reg] = value;
+            } else if reg == LCDC {
+                if self.verbose {
+                    eprintln!("setting LCDC=${:02x}", value);
+                }
+                self.lcd.set_lcdc(value);
+            } else if reg == DMA {
+                let source = value as u16 * 0x100;
+                for i in 0..0xa0 {
+                    let b = self.load(source + i);
+                    self.store(0xfe00 + i, b);
+                }
+            } else if reg == HDMA5 {
+                self.dma_requested = true;
                 self.management_bits[reg] = value;
             } else {
                 self.management_bits[reg] = value;
@@ -472,6 +781,18 @@ const HDMA5: usize = 0x155;
 // the address space at D000-DFFF.
 const SVBK: usize = 0x170;
 
+fn dump_mem_region(mem_map: &dyn MemoryBanks, start: u16, words: u16, width: u16) {
+    for i in 0..(words / 2) {
+        if i % width == 0 {
+            eprint!("    {:04x}:", start + (i * 2));
+        }
+        eprint!(" {:02x}{:02x}", mem_map.load((start + i * 2 + 1) as u16), mem_map.load((start + i * 2) as u16));
+        if i % width == width - 1 {
+            eprintln!("");
+        }
+    }
+}
+
 impl GBC {
     fn new(boot_rom: GBCCart) -> Self {
         Self {
@@ -515,7 +836,8 @@ impl GBC {
         } else {
             clocks
         };
-        let (vblank_int, stat_int) = self.lcd.advance_clock(self.management_bits[STAT], self.management_bits[LYC], lcd_clocks);
+
+        let (vblank_int, stat_int) = self.lcd.advance_clock(&self.vram, self.management_bits[STAT], self.management_bits[LYC], lcd_clocks, self.management_bits[SCX], self.management_bits[SCY]);
         if vblank_int {
             self.management_bits[IF] |= 0b00001;
         }
@@ -527,72 +849,105 @@ impl GBC {
         self.clock = new_clock;
     }
 
-    fn run(&mut self) -> GBState {
-        loop {
-            let mut mem_map = MemoryMapping {
-                cart: if self.in_boot {
-                    self.boot_rom.mapper.as_mut()
-                } else {
-                    self.cart.mapper.as_mut()
-                },
-                ram: &mut self.ram,
-                vram: &mut self.vram,
-                management_bits: &mut self.management_bits,
-                verbose: self.verbose,
-            };
+    fn run(&mut self) {
+        let mut mem_map = MemoryMapping {
+            cart: if self.in_boot {
+                self.boot_rom.mapper.as_mut()
+            } else {
+                self.cart.mapper.as_mut()
+            },
+            ram: &mut self.ram,
+            vram: &mut self.vram,
+            lcd: &mut self.lcd,
+            management_bits: &mut self.management_bits,
+            verbose: self.verbose,
+            dma_requested: false,
+        };
 
-            if self.verbose {
-                let mut reader = BankReader::read_at(&mut mem_map, self.cpu.pc);
-                let decoder = yaxpeax_sm83::InstDecoder::default();
+        if self.verbose {
+//        if true {
+            let mut reader = BankReader::read_at(&mut mem_map, self.cpu.pc);
+            let decoder = yaxpeax_sm83::InstDecoder::default();
 
-                let instr = decoder.decode(&mut reader).unwrap();
-                eprintln!("  {:?}", &mem_map.cart);
-                eprintln!("pc={:#04x} {}", self.cpu.pc, instr.decorate(&self.cpu, &mem_map));
-                eprintln!("  {:?}", instr);
+            let instr = decoder.decode(&mut reader).unwrap();
+            eprintln!("pc={:#04x} {}", self.cpu.pc, instr.decorate(&self.cpu, &mem_map));
+            let translated = mem_map.translate_address(self.cpu.pc);
+            if translated.segment == SEGMENT_CART {
+                eprintln!("  cart addr: {}", mem_map.cart.translate_address(self.cpu.pc));
+            } else {
+                eprintln!("  addr: {}", translated);
             }
-
-            let pc_before = self.cpu.pc;
-            let clocks = self.cpu.step(&mut mem_map);
-            if self.cpu.sp >= 0xfe00 && self.cpu.sp < 0xff80 {
-                panic!("nonsense sp: ${:04x}", self.cpu.sp);
-            }
-            if self.cpu.pc == 0 {
-                panic!("bogus code detected: pc=0");
-            }
-            if pc_before == self.cpu.pc {
-                panic!("loop detected");
-            }
-
-            if self.verbose {
-                eprintln!("clock: {}", self.clock);
-                eprint!("{:?}", &self.cpu);
-                let stack_entries = std::cmp::min(std::cmp::max(32, 0x10000 - self.cpu.sp as u32), 64);
-                let end = std::cmp::min(0x10000, self.cpu.sp as u32 + stack_entries);
-                let start = end - stack_entries;
-                for i in 0..(stack_entries / 2) {
-                    if i % 8 == 0 {
-                        eprint!("    {:04x}:", start + (i * 2) / 8);
-                    }
-                    eprint!(" {:02x}{:02x}", mem_map.load((start + i * 2 + 1) as u16), mem_map.load((start + i * 2) as u16));
-                    if i % 8 == 7 {
-                        eprintln!("");
-                    }
-                }
-            }
-
-            if self.in_boot {
-                let boot_rom_disable = mem_map.load(0xff50);
-                if boot_rom_disable != 0 {
-                    eprintln!("boot rom complete, switching to cart");
-                    self.verbose = true;
-                    self.cpu.verbose = true;
-                    self.in_boot = false;
-                }
-            }
-
-            self.advance_clock(clocks as u64);
+//            eprintln!("  {:?}", instr);
         }
-        GBState::EmulationError
+
+        let pc_before = self.cpu.pc;
+        let clocks = self.cpu.step(&mut mem_map);
+        if mem_map.dma_requested {
+            eprintln!("DMA REQUESTED");
+            let source = (mem_map.management_bits[HDMA1] as u16) << 8 | (mem_map.management_bits[HDMA2] as u16);
+            let dest = (mem_map.management_bits[HDMA3] as u16) << 8 | (mem_map.management_bits[HDMA4] as u16);
+            let size = mem_map.management_bits[HDMA5] as u16;
+            if size > 0x7f {
+                panic!("TODO: hblank dma");
+            }
+            let size = size * 0x10 + 0x10;
+            for i in 0..size {
+                mem_map.store(dest + i, mem_map.load(source + i));
+            }
+        }
+        if self.cpu.sp >= 0xfe00 && self.cpu.sp < 0xff80 {
+            panic!("nonsense sp: ${:04x}", self.cpu.sp);
+        }
+        /*
+        if pc_before == self.cpu.pc {
+            panic!("loop detected");
+        }
+        */
+        if self.cpu.pc == 0x1c2 {
+            eprintln!("pc: {}", mem_map.translate_address(self.cpu.pc));
+            eprintln!("rom addr: {}", mem_map.cart.translate_address(self.cpu.pc));
+            let mut reader = BankReader::read_at(&mut mem_map, self.cpu.pc);
+            let decoder = yaxpeax_sm83::InstDecoder::default();
+
+            let instr = decoder.decode(&mut reader).unwrap();
+            eprintln!("pc={:#04x} {}", self.cpu.pc, instr.decorate(&self.cpu, &mem_map));
+            self.cpu.step(&mut mem_map);
+            eprintln!("{:?}", &self.cpu);
+            eprintln!("emu breakpoint");
+//            self.verbose = true;
+//            self.cpu.verbose = true;
+        }
+
+        if self.verbose {
+            eprintln!("clock: {}", self.clock);
+            eprint!("{:?}", &self.cpu);
+            /*
+            let stack_entries = std::cmp::min(std::cmp::max(32, 0x10000 - self.cpu.sp as u32), 64);
+            let end = std::cmp::min(0x10000, self.cpu.sp as u32 + stack_entries);
+            let start = end - stack_entries;
+            for i in 0..(stack_entries / 2) {
+                if i % 8 == 0 {
+                    eprint!("    {:04x}:", start + (i * 2) / 8);
+                }
+                eprint!(" {:02x}{:02x}", mem_map.load((start + i * 2 + 1) as u16), mem_map.load((start + i * 2) as u16));
+                if i % 8 == 7 {
+                    eprintln!("");
+                }
+            }
+            */
+        }
+
+        if self.in_boot {
+            let boot_rom_disable = mem_map.load(0xff50);
+            if boot_rom_disable != 0 {
+                eprintln!("boot rom complete, switching to cart");
+//                    self.verbose = true;
+//                    self.cpu.verbose = true;
+                self.in_boot = false;
+            }
+        }
+
+        self.advance_clock(clocks as u64);
     }
 }
 
@@ -608,8 +963,24 @@ enum MemoryBankControllerType {
 }
 
 impl MemoryBankControllerType {
-    fn make_mapper(&self, ram_style: RamStyle, rom_image: Box<[u8]>) -> Box<dyn MemoryBanks> {
+    fn make_mapper(&self, ram_style: RamStyle, rom_image: Box<[u8]>) -> Box<dyn MemoryBanks + Send> {
         match self {
+            MemoryBankControllerType::MBC1 => {
+                let ram = match ram_style {
+                    RamStyle::None => Vec::new().into_boxed_slice(),
+                    RamStyle::Flat2kb => vec![0u8; 2 * 1024].into_boxed_slice(),
+                    RamStyle::Flat8kb => vec![0u8; 8 * 1024].into_boxed_slice(),
+                    RamStyle::Banked4x8kb => vec![0u8; 32 * 1024].into_boxed_slice(),
+                };
+
+                Box::new(MBC3 {
+                    ram_enable: 0u8,
+                    rom_bank: [0u8; 2],
+                    ram_bank: 0u8,
+                    rom: rom_image,
+                    ram: ram,
+                })
+            }
             MemoryBankControllerType::MBC3 => {
                 let ram = match ram_style {
                     RamStyle::None => Vec::new().into_boxed_slice(),
@@ -642,6 +1013,9 @@ impl MemoryBankControllerType {
                     ram: ram,
                 })
             },
+            MemoryBankControllerType::None => {
+                Box::new(FlatMapper::new(rom_image))
+            }
             other => {
                 panic!("unsupported mbc type: {:?}", other)
             }
@@ -721,7 +1095,7 @@ fn parse_features(features: u8) -> Option<CartridgeFeatures> {
 
 struct GBCCart {
     features: CartridgeFeatures,
-    mapper: Box<dyn MemoryBanks>,
+    mapper: Box<dyn MemoryBanks + Send>,
 }
 
 struct MemoryAddress {
@@ -766,11 +1140,59 @@ const SEGMENT_RAM: u8 = 1;
 const SEGMENT_MANAGEMENT: u8 = 2;
 const SEGMENT_VRAM: u8 = 3;
 const SEGMENT_CART: u8 = 4;
+const SEGMENT_OAM: u8 = 5;
 
 trait MemoryBanks: fmt::Debug {
     fn load(&self, addr: u16) -> u8;
     fn store(&mut self, addr: u16, value: u8);
     fn translate_address(&self, addr: u16) -> MemoryAddress;
+}
+
+#[derive(Debug)]
+struct MBC1 {
+    ram_enable: u8,
+    rom_bank: [u8; 2],
+    ram_bank: u8,
+    rom: Box<[u8]>,
+    ram: Box<[u8]>,
+}
+
+impl MemoryBanks for MBC1 {
+    fn load(&self, addr: u16) -> u8 {
+        let addr = self.translate_address(addr);
+        match addr {
+            MemoryAddress { segment: SEGMENT_ROM, address } => {
+                self.rom[address as usize]
+            }
+            MemoryAddress { segment: SEGMENT_RAM, address } => {
+                self.ram[address as usize]
+            }
+            other => {
+                panic!("invalid address? {other}");
+            }
+        }
+    }
+
+    fn translate_address(&self, addr: u16) -> MemoryAddress {
+        if addr <= 0x3fff {
+            MemoryAddress::rom(addr as u32)
+        } else if addr < 0x7fff {
+            let bank = u16::from_le_bytes(self.rom_bank) as usize;
+            let addr = addr as usize - 0x4000 + bank * 0x4000;
+            MemoryAddress::rom(addr as u32)
+        } else if addr < 0xa000 {
+            eprintln!("bad cart access at {:#04x}", addr);
+            MemoryAddress::rom(0)
+        } else if addr < 0xc000 {
+            let bank = self.ram_bank as usize;
+            let addr = addr as usize - 0xa000 + bank * 0x2000;
+            MemoryAddress::ram(addr as u32)
+        } else {
+            eprintln!("bad cart access at {:#04x}", addr);
+            MemoryAddress::rom(0)
+        }
+    }
+    fn store(&mut self, _addr: u16, _value: u8) {}
 }
 
 #[derive(Debug)]
