@@ -500,7 +500,16 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
                 self.cpu.af[1] = res;
             },
             Op8bAOp::ADC => {
-                panic!("adc");
+                let c_in = ((self.cpu.af[0] & 0b0001_0000) > 0) as u8;
+                let (res, carry) = left.overflowing_add(right);
+                let (res, c2) = res.overflowing_add(c_in);
+                let c_out = carry || c2;
+                let h = (left & 0xf) + (right & 0xf) + c_in > 0xf;
+                self.cpu.af[0] = 0b0000_0000;
+                if carry { self.cpu.af[0] |= 0b0001_0000; }
+                if h { self.cpu.af[0] |= 0b0010_0000; }
+                if res == 0 { self.cpu.af[0] |= 0b1000_0000; }
+                self.cpu.af[1] = res;
             },
             Op8bAOp::SUB => {
                 let (res, carry) = left.overflowing_sub(right);
@@ -512,7 +521,16 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
                 self.cpu.af[1] = res;
             },
             Op8bAOp::SBC => {
-                panic!("sbc");
+                let c_in = ((self.cpu.af[0] & 0b0001_0000) > 0) as u8;
+                let (res, carry) = left.overflowing_sub(right);
+                let (res, c2) = res.overflowing_sub(c_in);
+                let c_out = carry || c2;
+                let h = (left & 0xf).wrapping_sub(right & 0xf).wrapping_sub(c_in) > 0xf;
+                self.cpu.af[0] = 0b0000_0000;
+                if carry { self.cpu.af[0] |= 0b0001_0000; }
+                if h { self.cpu.af[0] |= 0b0010_0000; }
+                if res == 0 { self.cpu.af[0] |= 0b1000_0000; }
+                self.cpu.af[1] = res;
             },
             Op8bAOp::AND => {
                 self.cpu.af[1] = left & right;
@@ -560,7 +578,16 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
                 self.cpu.af[1] = res;
             },
             Op8bAOp::ADC => {
-                panic!("adc");
+                let c_in = ((self.cpu.af[0] & 0b0001_0000) > 0) as u8;
+                let (res, carry) = left.overflowing_add(right);
+                let (res, c2) = res.overflowing_add(c_in);
+                let c_out = carry || c2;
+                let h = (left & 0xf) + (right & 0xf) + c_in > 0xf;
+                self.cpu.af[0] = 0b0000_0000;
+                if carry { self.cpu.af[0] |= 0b0001_0000; }
+                if h { self.cpu.af[0] |= 0b0010_0000; }
+                if res == 0 { self.cpu.af[0] |= 0b1000_0000; }
+                self.cpu.af[1] = res;
             },
             Op8bAOp::SUB => {
                 let (res, carry) = left.overflowing_sub(right);
@@ -572,7 +599,16 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
                 self.cpu.af[1] = res;
             },
             Op8bAOp::SBC => {
-                panic!("sbc");
+                let c_in = ((self.cpu.af[0] & 0b0001_0000) > 0) as u8;
+                let (res, carry) = left.overflowing_sub(right);
+                let (res, c2) = res.overflowing_sub(c_in);
+                let c_out = carry || c2;
+                let h = (left & 0xf).wrapping_sub(right & 0xf).wrapping_sub(c_in) > 0xf;
+                self.cpu.af[0] = 0b0000_0000;
+                if carry { self.cpu.af[0] |= 0b0001_0000; }
+                if h { self.cpu.af[0] |= 0b0010_0000; }
+                if res == 0 { self.cpu.af[0] |= 0b1000_0000; }
+                self.cpu.af[1] = res;
             },
             Op8bAOp::AND => {
                 self.cpu.af[1] = left & right;
@@ -1072,6 +1108,61 @@ mod test {
             result.hl = [0x98, 0x00];
             result.pc += 3;
             super::execute_test(&mut cpu, &[0x21, 0x98, 0x00]);
+
+            assert_eq!(cpu, result);
+        }
+
+        #[test]
+        fn test_adc() {
+            let mut cpu = Cpu::new();
+            cpu.af[0] = 0x10;
+            cpu.af[1] = 0x10;
+            cpu.hl[1] = 0x00;
+            let mut result = cpu.clone();
+            result.af[0] = 0x00;
+            result.af[1] = 0x11;
+            result.hl[1] = 0x00;
+            result.pc += 1;
+            super::execute_test(&mut cpu, &[0x8c]);
+
+            assert_eq!(cpu, result);
+
+            let mut cpu = Cpu::new();
+            cpu.af[0] = 0x00;
+            cpu.af[1] = 0x10;
+            cpu.hl[1] = 0x00;
+            let mut result = cpu.clone();
+            result.af[0] = 0x00;
+            result.af[1] = 0x10;
+            result.hl[1] = 0x00;
+            result.pc += 1;
+            super::execute_test(&mut cpu, &[0x8c]);
+
+            assert_eq!(cpu, result);
+
+            let mut cpu = Cpu::new();
+            cpu.af[0] = 0x00;
+            cpu.af[1] = 0x10;
+            cpu.hl[1] = 0x11;
+            let mut result = cpu.clone();
+            result.af[0] = 0x00;
+            result.af[1] = 0x21;
+            result.hl[1] = 0x11;
+            result.pc += 1;
+            super::execute_test(&mut cpu, &[0x8c]);
+
+            assert_eq!(cpu, result);
+
+            let mut cpu = Cpu::new();
+            cpu.af[0] = 0x10;
+            cpu.af[1] = 0xf0;
+            cpu.hl[1] = 0x0f;
+            let mut result = cpu.clone();
+            result.af[0] = 0xa0;
+            result.af[1] = 0x00;
+            result.hl[1] = 0x0f;
+            result.pc += 1;
+            super::execute_test(&mut cpu, &[0x8c]);
 
             assert_eq!(cpu, result);
         }
