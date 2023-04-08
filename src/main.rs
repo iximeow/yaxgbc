@@ -436,10 +436,19 @@ const LY: usize = 0x144;
 // LY Compare
 // raise STAT interrupt if LYC=LY flag in STAT is set and LYC == LY
 const LYC: usize = 0x145;
+// OAM DMA
+const DMA: usize = 0x146;
+// (DMG only) background palette
+const BGP: usize = 0x147;
 
 // Prepare speed switch (CGB mode only)
 // see gbadev pan docs
 const KEY1: usize = 0x14d;
+// upper/left positions of the window area
+// window Y
+const WY: usize = 0x14a;
+// window X
+const WX: usize = 0x14b;
 // VBK: VRAM bank (CGB mode only)
 // This register can be written to change VRAM banks. Only bit 0 matters, all other bits are
 // ignored.
@@ -447,6 +456,16 @@ const VBK: usize = 0x14f;
 // Disables boot ROM whet to non-zero
 // // Disables boot ROM whet to non-zero
 const BANK: usize = 0x150;
+// VRAM DMA source high
+const HDMA1: usize = 0x151;
+// VRAM DMA source low
+const HDMA2: usize = 0x152;
+// VRAM DMA dest high
+const HDMA3: usize = 0x153;
+// VRAM DMA dest low
+const HDMA4: usize = 0x154;
+// VRAM DMA length/mode/start
+const HDMA5: usize = 0x155;
 // SVBK: WRAM bank (CGB mode only)
 // In CGB Mode 32 KBytes internal RAM are available. This memory is divided into 8 banks of 4
 // KBytes each. Bank 0 is always available in memory at C000-CFFF, Bank 1-7 can be selected into
