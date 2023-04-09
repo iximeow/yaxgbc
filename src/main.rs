@@ -168,7 +168,31 @@ struct OamItem {
     selected_line: u8,
     x: u8,
     tile_index: u8,
-    oam_flags: u8,
+    oam_attrs: OamAttributes,
+}
+
+struct OamAttributes(u8);
+
+impl OamAttributes {
+    fn flip_vertical(&self) -> bool {
+        (self.0 & 0b0100_0000) != 0
+    }
+
+    fn flip_horizontal(&self) -> bool {
+        (self.0 & 0b0010_0000) != 0
+    }
+
+    fn palette_number(&self) -> u16 {
+        ((self.0 & 0b0001_0000) >> 4) as u16
+    }
+
+    fn vram_bank(&self) -> u16 {
+        ((self.0 & 0b0000_1000) >> 3) as u16
+    }
+
+    fn bg_palette(&self) -> u8 {
+        self.0 & 0b0000_0111
+    }
 }
 
 struct TileAttributes(u8);
@@ -232,7 +256,7 @@ impl Lcd {
     }
     fn tile_addr_translate<'a>(&self, tile_id: u8) -> usize {
         let data_offset = if self.lcdc & 0b0001_0000 == 0 {
-            let addr = (((tile_id as i8).wrapping_add(-0x80)) as u8 as u16 * 16);
+            let addr = ((tile_id as i8).wrapping_add(-0x80)) as u8 as u16 * 16;
             0x800 + addr as usize
         } else {
             tile_id as usize * 16
@@ -379,7 +403,7 @@ impl Lcd {
                             selected_line: selected_line as u8,
                             x: x_end,
                             tile_index: self.oam[object_addr + 2],
-                            oam_flags: self.oam[object_addr + 3],
+                            oam_attrs: OamAttributes(self.oam[object_addr + 3]),
                         });
                     }
                     self.oam_scan_items.sort_by_key(|item| item.x);
@@ -390,9 +414,19 @@ impl Lcd {
                         if item.x >= 168 {
                             continue;
                         }
-                        let bank = ((item.oam_flags & 0b0000_1000) >> 3) as usize * 0x2000;
+                        let bank = item.oam_attrs.vram_bank() as usize * 0x2000;
                         let oam_tile_addr = bank + item.tile_index as usize * 16;
-                        let (tile_row_lo, tile_row_hi) = if self.lcdc & 0b100 == 0 || item.selected_line < 8 {
+                        let y_addr = if item.oam_attrs.flip_vertical() {
+                            let oam_height = if self.lcdc & 0b100 == 0 {
+                                8
+                            } else {
+                                16
+                            };
+                            (oam_height - 1) - item.selected_line
+                        } else {
+                            item.selected_line
+                        };
+                        let (tile_row_lo, tile_row_hi) = if self.lcdc & 0b100 == 0 || y_addr < 8 {
                             let tile_line = item.selected_line;
                             let oam_tile_data = &vram[oam_tile_addr..][..16];
                             let lo = oam_tile_data[tile_line as usize * 2];
@@ -411,6 +445,12 @@ impl Lcd {
                             if x_addr < 0 || x_addr >= 160 {
                                 continue;
                             }
+
+                            let x = if item.oam_attrs.flip_horizontal() {
+                                7 - x
+                            } else {
+                                x
+                            };
 
                             let px =
                                 (((tile_row_hi >> (7 - x)) & 1) << 1) |
