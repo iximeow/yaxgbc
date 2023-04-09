@@ -734,6 +734,12 @@ impl MemoryBanks for MemoryMapping<'_> {
             } else if reg == HDMA5 {
                 self.dma_requested = true;
                 self.management_bits[reg] = value;
+            } else if reg == TAC {
+                if value & 0xf8 != 0 {
+                    eprintln!("bogus TAC value: {:02x}", value);
+                }
+                eprintln!("TAC set to {:02x}", value);
+                self.management_bits[reg] = value;
             } else {
                 self.management_bits[reg] = value;
             }
@@ -765,6 +771,21 @@ enum GBState {
 const JOYP: usize = 0x100;
 // timer divider
 const DIV: usize = 0x104;
+// timer counter
+// incremented at frequency specified by TAC, overflow fires timer interrupt
+const TIMA: usize = 0x105;
+// timer modulo
+// when TIMA overflows, it is reset to the value in this register
+const TMA: usize = 0x106;
+// timer control
+// Bit 2 - Timer Enable
+// Bits 1-0 - Input Clock Select
+//   00: CPU Clock / 1024
+//   01: CPU Clock / 16
+//   10: CPU Clock / 64
+//   11: CPU Clock / 256
+const TAC: usize = 0x107;
+
 // interrupts are laid out as
 // Bit 0: VBlank   Interrupt Enable  (INT $40)
 // Bit 1: LCD STAT Interrupt Enable  (INT $48)
@@ -887,8 +908,6 @@ impl GBC {
     }
 
     fn advance_clock(&mut self, clocks: u64) {
-        // TODO: support TAC/TMA/TIMA...
-
         // practically speaking this will never overflow, but still..
         let new_clock = self.clock.wrapping_add(clocks);
 
@@ -898,6 +917,22 @@ impl GBC {
             let div_amount = (div_overshoot as u64 + 255) / 256;
             self.management_bits[DIV] = self.management_bits[DIV].wrapping_add(div_amount as u8);
             self.next_div_tick = self.next_div_tick.wrapping_add(div_amount * 256);
+        }
+
+        if self.management_bits[TAC] & 0b0100 != 0 {
+            let tac_div = [1024, 16, 64, 256][self.management_bits[TAC] as usize & 0b11];
+            let tima_increment = (new_clock / tac_div) - (self.clock / tac_div);
+
+            let tima = self.management_bits[TIMA] as u16;
+            let new_tima = tima + tima_increment as u16;
+            if new_tima > 0xff {
+                self.management_bits[IF] |= 0b00100;
+                // TODO: according to SameBoy it is four cycles to reload TIMA, during which period
+                // TIMA should be 0
+                self.management_bits[TIMA] = self.management_bits[TMA];
+            } else {
+                self.management_bits[TIMA] = new_tima as u8;
+            }
         }
 
         let lcd_clocks = if self.cpu.speed_mode != 0 {
