@@ -171,6 +171,26 @@ struct OamItem {
     oam_flags: u8,
 }
 
+struct TileAttributes(u8);
+
+impl TileAttributes {
+    fn flip_vertical(&self) -> bool {
+        (self.0 & 0b0100_0000) != 0
+    }
+
+    fn flip_horizontal(&self) -> bool {
+        (self.0 & 0b0010_0000) != 0
+    }
+
+    fn vram_bank(&self) -> u16 {
+        ((self.0 & 0b0000_1000) >> 3) as u16
+    }
+
+    fn bg_palette(&self) -> u8 {
+        self.0 & 0b0000_0111
+    }
+}
+
 impl Lcd {
     const LINE_TIME: u64 = 376;
     const VBLANK_TIME: u64 = 4560; // vblank is 10 scan lines
@@ -194,7 +214,7 @@ impl Lcd {
         }
     }
 
-    fn tile_lookup_by_nr<'a>(&self, vram: &'a [u8], tile_nr: u16) -> &'a [u8] {
+    fn tile_lookup_by_nr<'a>(&self, vram: &'a [u8], tile_nr: u16) -> (&'a [u8], TileAttributes) {
         // look up the tile number in vram bank 0
         // then attrs for that tile number in vram bank 1
         //
@@ -202,15 +222,13 @@ impl Lcd {
         // find the right data.
         let tile_map_base = self.background_tile_base() as usize;
         let tile_id = vram[tile_map_base + tile_nr as usize];
-        let tile_attrs = vram[tile_map_base + tile_nr as usize + 0x2000];
+        let tile_attrs = TileAttributes(vram[tile_map_base + tile_nr as usize + 0x2000]);
 
         let mut tile_data_addr = self.tile_addr_translate(tile_id);
 
-        if tile_attrs & 0b0000_1000 != 0 {
-            tile_data_addr += 0x2000;
-        }
+        tile_data_addr += tile_attrs.vram_bank() as usize * 0x2000;
 
-        &vram[tile_data_addr..][..16]
+        (&vram[tile_data_addr..][..16], tile_attrs)
     }
     fn tile_addr_translate<'a>(&self, tile_id: u8) -> usize {
         let data_offset = if self.lcdc & 0b0001_0000 == 0 {
@@ -419,13 +437,23 @@ impl Lcd {
                         let line_x = i + background_x;
                         let tile_x = (line_x / 8) as u16;
                         let tile_nr = tile_y * 32 + tile_x;
-                        let tile_data = self.tile_lookup_by_nr(vram, tile_nr);
+                        let (tile_data, attributes) = self.tile_lookup_by_nr(vram, tile_nr);
+                        let y_idx = if attributes.flip_vertical() {
+                            7 - tile_yoffs
+                        } else {
+                            tile_yoffs
+                        };
+                        let tile_row_lo = tile_data[y_idx as usize * 2];
+                        let tile_row_hi = tile_data[y_idx as usize * 2 + 1];
                         let tile_xoffs = i % 8;
-                        let tile_row_lo = tile_data[tile_yoffs as usize * 2];
-                        let tile_row_hi = tile_data[tile_yoffs as usize * 2 + 1];
+                        let x_idx = if attributes.flip_horizontal() {
+                            7 - tile_xoffs
+                        } else {
+                            tile_xoffs
+                        };
                         let px =
-                            (((tile_row_hi >> (7 - tile_xoffs)) & 1) << 1) |
-                            (((tile_row_lo >> (7 - tile_xoffs)) & 1) << 0);
+                            (((tile_row_hi >> (7 - x_idx)) & 1) << 1) |
+                            (((tile_row_lo >> (7 - x_idx)) & 1) << 0);
 
                         self.background_pixels.push(px);
                     }
