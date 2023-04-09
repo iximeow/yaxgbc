@@ -951,24 +951,12 @@ impl Cpu {
     }
 
     pub fn step<'storage: 'env, 'env>(&'env mut self, memory: &'env mut MemoryMapping<'storage>) -> u16 {
-        if self.halted {
-            // cpu is halted.
-
-            // if interrupts are disabled, we just `halt`ed. wake, advance one
-            // clock, and resume execution (programmers: do not do this).
-            if !self.ime {
-                self.halted = false;
-                return 4;
-            }
-
+        if self.ime {
             // otherwise, interrupts are enabled, and if none have fired we will remain in
             // low-power mode (advancing by one clock as the rest of the machine still has to
             // operate).
             let interrupts = memory.management_bits[crate::IF as usize] & memory.management_bits[crate::IE as usize];
-            if interrupts == 0 {
-                // no interrupts, remain halted.
-                return 4;
-            } else {
+            if interrupts != 0 {
                 // have an interrupt, update state appropriately and wake from halt
                 self.halted = false;
 
@@ -978,12 +966,29 @@ impl Cpu {
                 assert!(interrupt_nr < 4, "bogus interrupt? {}", interrupt_nr);
                 eprintln!("interrupt {}", interrupt_nr);
 
+                // unset the bit for the interrupt we're about to service
+                memory.management_bits[crate::IF as usize] ^= 1 << interrupt_nr;
+
                 let interrupt_addr = 0x40 + (8 * interrupt_nr) as u16;
                 self.pc = interrupt_addr;
                 // and finally, enter the ISR with interrupts disabled again.
                 self.ime = false;
             }
         }
+
+        if self.halted {
+            // if the cpu is halted and interrupts are disabled, the last instruction we executed
+            // was, itself, `halt`. wake from halt and advance one clock. (programmers: do not do
+            // this).
+            //
+            // otherwise, interrupts are enabled and we're just still halted. the rest of the
+            // machine is still running, so advance a clock.
+            if !self.ime {
+                self.halted = false;
+            }
+            return 4;
+        }
+
         let mut buf = [
             memory.load(self.pc),
             memory.load(self.pc + 1),

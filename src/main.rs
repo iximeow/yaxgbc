@@ -798,7 +798,7 @@ const TAC: usize = 0x107;
 const IF: usize = 0x10f;
 // interrupt enable
 // 1=request
-const IE: usize = 0x10f;
+const IE: usize = 0x1ff;
 /*
  * 0x130 - 0x13f
  * Wave pattern RAM
