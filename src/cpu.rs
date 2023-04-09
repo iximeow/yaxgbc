@@ -1002,45 +1002,6 @@ impl Cpu {
         yaxpeax_sm83::decode_inst(&decoder, &mut env, &mut reader).unwrap();
 
         return env.clocks;
-
-                /*
-        // baseline execution time: four clocks per byte of instruction..
-        let mut clocks = 0u16.wrapping_offset(instr.len()).to_linear() as u8 * 4;
-
-        // if an operand accesses memory, that's an extra 4 clocks...
-        match instr.operands() {
-            [Operand::DerefHL, _] |
-            [_, Operand::DerefHL] |
-            [Operand::DerefBC, _] |
-            [_, Operand::DerefBC] |
-            [Operand::DerefDE, _] |
-            [_, Operand::DerefDE] |
-            [Operand::DerefDecHL, _] |
-            [_, Operand::DerefDecHL] |
-            [Operand::DerefIncHL, _] |
-            [_, Operand::DerefIncHL] |
-            [Operand::DerefHighC, _] |
-            [_, Operand::DerefHighC] |
-            [Operand::DerefHighD8(_), _] |
-            [_, Operand::DerefHighD8(_)] => {
-                clocks += 4;
-            }
-            _ => {}
-        }
-
-        // inc/dec/rotates read and write to memory, so they pay 4 clock cost twice....
-        match instr.opcode() {
-            Opcode::INC | Opcode::DEC |
-            Opcode::RLC | Opcode::RL | Opcode::RRC | Opcode::RR |
-            Opcode::SLA | Opcode::SWAP | Opcode::SRA | Opcode::SRL |
-            Opcode::SET | Opcode::RES => {
-                if instr.operands()[0] == Operand::DerefHL {
-                    clocks += 4;
-                }
-            }
-            _ => {}
-        }
-        */
     }
 }
 
