@@ -1122,10 +1122,11 @@ impl MemoryBankControllerType {
 
                 Box::new(MBC3 {
                     ram_enable: 0u8,
-                    rom_bank: [0u8; 2],
+                    rom_bank: 0u8,
                     ram_bank: 0u8,
                     rom: rom_image,
                     ram: ram,
+                    rtc: [0u8; 5],
                 })
             }
             MemoryBankControllerType::MBC3 => {
@@ -1138,10 +1139,11 @@ impl MemoryBankControllerType {
 
                 Box::new(MBC3 {
                     ram_enable: 0u8,
-                    rom_bank: [0u8; 2],
+                    rom_bank: 0u8,
                     ram_bank: 0u8,
                     rom: rom_image,
                     ram: ram,
+                    rtc: [0u8; 5],
                 })
             },
             MemoryBankControllerType::MBC5 => {
@@ -1288,6 +1290,7 @@ const SEGMENT_MANAGEMENT: u8 = 2;
 const SEGMENT_VRAM: u8 = 3;
 const SEGMENT_CART: u8 = 4;
 const SEGMENT_OAM: u8 = 5;
+const SEGMENT_RTC: u8 = 6;
 
 trait MemoryBanks: fmt::Debug {
     fn load(&self, addr: u16) -> u8;
@@ -1325,6 +1328,11 @@ impl MemoryBanks for MBC1 {
             MemoryAddress::rom(addr as u32)
         } else if addr < 0x7fff {
             let bank = u16::from_le_bytes(self.rom_bank) as usize;
+            let bank = if bank == 0 {
+                1
+            } else {
+                bank
+            };
             let addr = addr as usize - 0x4000 + bank * 0x4000;
             MemoryAddress::rom(addr as u32)
         } else if addr < 0xa000 {
@@ -1339,16 +1347,36 @@ impl MemoryBanks for MBC1 {
             MemoryAddress::rom(0)
         }
     }
-    fn store(&mut self, _addr: u16, _value: u8) {}
+    fn store(&mut self, addr: u16, value: u8) {
+        if addr < 0xa000 {
+            let reg_bits = addr >> 12;
+            match reg_bits {
+                0 | 1 => { self.ram_enable = value; },
+                2 => { self.rom_bank[0] = value; },
+                3 => { self.rom_bank[1] = value; },
+                _ => { self.ram_bank = value; },
+            }
+        } else if addr < 0xc000 {
+            if self.ram_enable & 0x0f != 0x0a {
+                return;
+            }
+            let addr = self.translate_address(addr);
+            debug_assert!(addr.segment == SEGMENT_RAM);
+            self.ram[addr.address as usize] = value;
+        } else {
+            eprintln!("bad cart access at {:#04x}", addr);
+        }
+    }
 }
 
 #[derive(Debug)]
 struct MBC3 {
     ram_enable: u8,
-    rom_bank: [u8; 2],
+    rom_bank: u8,
     ram_bank: u8,
     rom: Box<[u8]>,
     ram: Box<[u8]>,
+    rtc: [u8; 5],
 }
 
 impl MemoryBanks for MBC3 {
@@ -1361,6 +1389,9 @@ impl MemoryBanks for MBC3 {
             MemoryAddress { segment: SEGMENT_RAM, address } => {
                 self.ram[address as usize]
             }
+            MemoryAddress { segment: SEGMENT_RTC, address } => {
+                self.rtc[address as usize]
+            }
             other => {
                 panic!("invalid address? {other}");
             }
@@ -1371,7 +1402,12 @@ impl MemoryBanks for MBC3 {
         if addr <= 0x3fff {
             MemoryAddress::rom(addr as u32)
         } else if addr < 0x7fff {
-            let bank = u16::from_le_bytes(self.rom_bank) as usize;
+            let bank = self.rom_bank as usize;
+            let bank = if bank == 0 {
+                1
+            } else {
+                bank
+            };
             let addr = addr as usize - 0x4000 + bank * 0x4000;
             MemoryAddress::rom(addr as u32)
         } else if addr < 0xa000 {
@@ -1379,14 +1415,51 @@ impl MemoryBanks for MBC3 {
             MemoryAddress::rom(0)
         } else if addr < 0xc000 {
             let bank = self.ram_bank as usize;
-            let addr = addr as usize - 0xa000 + bank * 0x2000;
-            MemoryAddress::ram(addr as u32)
+            if bank < 4 {
+                let addr = addr as usize - 0xa000 + bank * 0x2000;
+                MemoryAddress::ram(addr as u32)
+            } else {
+                MemoryAddress {
+                    segment: SEGMENT_RTC,
+                    address: bank as u32 - 0x08,
+                }
+            }
         } else {
             eprintln!("bad cart access at {:#04x}", addr);
             MemoryAddress::rom(0)
         }
     }
-    fn store(&mut self, _addr: u16, _value: u8) {}
+    fn store(&mut self, addr: u16, value: u8) {
+        if addr < 0xa000 {
+            let reg_bits = addr >> 12;
+            match reg_bits {
+                0 | 1 => { self.ram_enable = value; },
+                2 | 3 => { self.rom_bank = if value == 0 { 1 } else { value }; },
+                4 | 5 => {
+                    self.ram_bank = value;
+                },
+                _ => {
+                    eprintln!("TODO: latch clock data");
+               //     panic!("latch clock data")
+                },
+            }
+        } else if addr < 0xc000 {
+            if self.ram_enable & 0x0f != 0x0a {
+                return;
+            }
+            let addr = self.translate_address(addr);
+            if addr.segment == SEGMENT_RAM {
+                self.ram[addr.address as usize] = value;
+            } else {
+                debug_assert!(addr.segment == SEGMENT_RTC);
+                // TODO: accurate RTC semantics (respect halt bit, do something about writes with
+                // halt bit clear, etc
+                self.rtc[addr.address as usize] = value;
+            }
+        } else {
+            eprintln!("bad cart access at {:#04x}", addr);
+        }
+    }
 }
 
 struct MBC5 {

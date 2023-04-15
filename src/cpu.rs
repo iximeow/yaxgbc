@@ -720,7 +720,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
                 if v & 0x01 != 0 {
                     self.cpu.af[0] |= 0b0001_0000;
                 }
-                let shifted = v >> 1;
+                let shifted = ((v as i8) >> 1) as u8;
                 if shifted == 0 {
                     self.cpu.af[0] |= 0b1000_0000;
                 }
@@ -731,7 +731,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
                 if v & 0x01 != 0 {
                     self.cpu.af[0] |= 0b0001_0000;
                 }
-                let shifted = ((v as i8) >> 1) as u8;
+                let shifted = v >> 1;
                 if shifted == 0 {
                     self.cpu.af[0] |= 0b1000_0000;
                 }
@@ -837,19 +837,49 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
     }
     fn on_rra(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
         let v = self.cpu.af[1];
-        let c = (self.cpu.af[0] >> 4) & 0b0001;
+        let c = self.cpu.af[1] & 1;
         self.cpu.af[0] = 0b0000_0000;
-        if v & 0x01 != 0 {
+        if c != 0 {
             self.cpu.af[0] |= 0b0001_0000;
         }
         let rotated = (v >> 1) | (c << 7);
+        /*
+        // allegedly rra never sets zero
         if rotated == 0 {
             self.cpu.af[0] |= 0b1000_0000;
         }
+        */
         self.cpu.af[1] = rotated;
         Ok(())
     }
-    fn on_daa(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> { todo!() }
+    fn on_daa(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        let adjust_low = self.cpu.flag_h() || (self.cpu.af[1] & 0x0f) > 9;
+        let adjust_high = self.cpu.flag_c() || (self.cpu.af[1] > 0x99);
+        if self.cpu.flag_n() {
+            if self.cpu.flag_h() {
+                self.cpu.flag_h_set((self.cpu.af[1] & 0x0f) < 6);
+            } else {
+                self.cpu.flag_h_set(false);
+            }
+        } else {
+            self.cpu.flag_h_set((self.cpu.af[1] & 0x0f) >= 0x0a);
+        }
+
+        let amt = match (adjust_low, adjust_high) {
+            (false, false) => 0,
+            (false, true) => {
+                if self.cpu.flag_n() { 0xa0 } else { 0x60 }
+            }
+            (true, false) => {
+                if self.cpu.flag_n() { 0xfa } else { 0x06 }
+            }
+            (true, true) => {
+                if self.cpu.flag_n() { 0x9a } else { 0x66 }
+            }
+        };
+        self.cpu.af[1] = self.cpu.af[1].wrapping_add(amt);
+        Ok(())
+    }
     fn on_scf(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
         self.cpu.af[0] &= 0b1000_0000;
         self.cpu.af[0] |= 0b0001_0000;
@@ -937,6 +967,28 @@ impl Cpu {
         }
     }
 
+    fn flag_h_set(&mut self, v: bool) {
+        if v {
+            self.af[0] |= 0b0010_0000;
+        }
+    }
+
+    fn flag_h(&self) -> bool {
+        self.af[0] & 0b0010_0000 != 0
+    }
+
+    fn flag_c(&self) -> bool {
+        self.af[0] & 0b0001_0000 != 0
+    }
+
+    fn flag_n(&self) -> bool {
+        self.af[0] & 0b0100_0000 != 0
+    }
+
+    fn flag_z(&self) -> bool {
+        self.af[0] & 0b1000_0000 != 0
+    }
+
     fn push(&mut self, memory: &mut MemoryMapping, value: u16) {
         let bytes = value.to_le_bytes();
         self.sp = self.sp.wrapping_sub(2);
@@ -964,7 +1016,7 @@ impl Cpu {
                 self.push(memory, self.pc);
                 let interrupt_nr = interrupts.trailing_zeros();
                 assert!(interrupt_nr < 4, "bogus interrupt? {}", interrupt_nr);
-                eprintln!("interrupt {}", interrupt_nr);
+//                eprintln!("interrupt {}", interrupt_nr);
 
                 // unset the bit for the interrupt we're about to service
                 memory.management_bits[crate::IF as usize] ^= 1 << interrupt_nr;
@@ -1005,6 +1057,7 @@ impl Cpu {
     }
 }
 
+// TODO: CB3F does not work?
 
 mod test {
     use crate::{Cpu, FlatMapper, MemoryMapping};
@@ -1022,7 +1075,7 @@ mod test {
             ram: &mut [],
             vram: &mut [],
             lcd: &mut lcd,
-            management_bits: &mut [],
+            management_bits: &mut [0u8; 512],
             verbose: false,
             dma_requested: false,
         };
@@ -1117,6 +1170,81 @@ mod test {
             result.af[0] = 0x90;
             result.pc += 2;
             super::execute_test(&mut cpu, &[0xcb, 0x1a]);
+
+            assert_eq!(cpu, result);
+
+            let test_pairs: &[(u8, (u8, u8))] = &[
+                (0x01, (0x80, 0x10)),
+                (0x02, (0x01, 0x00)),
+                (0x04, (0x02, 0x00)),
+                (0x08, (0x04, 0x00)),
+                (0x10, (0x08, 0x00)),
+                (0x20, (0x10, 0x00)),
+                (0x40, (0x20, 0x00)),
+                (0x80, (0x40, 0x00)),
+            ];
+
+            for (init, (res_a, res_f)) in test_pairs.iter() {
+                println!("rra of {:02x} should be {:02x}", init, res_a);
+                let mut cpu = Cpu::new();
+                cpu.af[1] = *init;
+                cpu.af[0] = 0x00;
+                let mut result = cpu.clone();
+                result.af[1] = *res_a;
+                result.af[0] = *res_f;
+                result.pc += 1;
+                super::execute_test(&mut cpu, &[0x1f]);
+
+                assert_eq!(cpu, result);
+            }
+        }
+
+        #[test]
+        fn test_srl() {
+            let mut cpu = Cpu::new();
+            cpu.af[0] = 0x00;
+            cpu.af[1] = 0x02;
+            let mut result = cpu.clone();
+            result.af[0] = 0x00;
+            result.af[1] = 0x01;
+            result.pc += 2;
+            super::execute_test(&mut cpu, &[0xcb, 0x3f]);
+
+            assert_eq!(cpu, result);
+
+            let mut cpu = Cpu::new();
+            cpu.af[0] = 0x00;
+            cpu.af[1] = 0x80;
+            let mut result = cpu.clone();
+            result.af[0] = 0x00;
+            result.af[1] = 0x40;
+            result.pc += 2;
+            super::execute_test(&mut cpu, &[0xcb, 0x3f]);
+
+            assert_eq!(cpu, result);
+        }
+
+        #[test]
+        fn test_sra() {
+            let mut cpu = Cpu::new();
+            cpu.af[0] = 0x00;
+            cpu.af[1] = 0x02;
+            let mut result = cpu.clone();
+            result.af[0] = 0x00;
+            result.af[1] = 0x01;
+            result.pc += 2;
+            super::execute_test(&mut cpu, &[0xcb, 0x2f]);
+
+            assert_eq!(cpu, result);
+
+            let mut cpu = Cpu::new();
+            cpu.af[0] = 0x00;
+            cpu.af[1] = 0x80;
+            let mut result = cpu.clone();
+            result.af[0] = 0x00;
+            result.af[1] = 0xc0;
+            result.pc += 2;
+            super::execute_test(&mut cpu, &[0xcb, 0x2f]);
 
             assert_eq!(cpu, result);
         }
