@@ -59,7 +59,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
             } else {
                 *f &= !0b0010_0000;
             }
-            *f |= 0b0100_0000;
+            *f &= !0b0100_0000;
             if v == 0xff {
                 *f |= 0b1000_0000;
             } else {
@@ -433,11 +433,10 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
                     Reg8b::A => { self.cpu.af[1] },
                 };
                 let res = v & (1 << bit);
-                self.cpu.af[0] &= !0b1110_0000;
-                self.cpu.af[0] |= 0b0010_0000;
-                if res == 0 {
-                    self.cpu.af[0] |= 0b1000_0000;
-                }
+                self.cpu.flags_clear();
+                self.cpu.flag_c_set(true);
+                self.cpu.flag_h_set(true);
+                self.cpu.flag_z_set(res == 0);
             },
             BitOp::RES => {
                 match operand {
@@ -523,7 +522,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
                 let (res, c2) = res.overflowing_sub(c_in);
                 let c_out = carry || c2;
                 let h = (left & 0xf).wrapping_sub(right & 0xf).wrapping_sub(c_in) > 0xf;
-                self.cpu.af[0] = 0b0000_0000;
+                self.cpu.af[0] = 0b0100_0000;
                 if carry { self.cpu.af[0] |= 0b0001_0000; }
                 if h { self.cpu.af[0] |= 0b0010_0000; }
                 if res == 0 { self.cpu.af[0] |= 0b1000_0000; }
@@ -601,7 +600,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
                 let (res, c2) = res.overflowing_sub(c_in);
                 let c_out = carry || c2;
                 let h = (left & 0xf).wrapping_sub(right & 0xf).wrapping_sub(c_in) > 0xf;
-                self.cpu.af[0] = 0b0000_0000;
+                self.cpu.af[0] = 0b0100_0000;
                 if carry { self.cpu.af[0] |= 0b0001_0000; }
                 if h { self.cpu.af[0] |= 0b0010_0000; }
                 if res == 0 { self.cpu.af[0] |= 0b1000_0000; }
@@ -952,11 +951,11 @@ impl Cpu {
         }
     }
 
-    fn flag_c_set(&mut self, v: bool) {
+    fn flag_n_set(&mut self, v: bool) {
         if v {
-            self.af[0] |= 0b0001_0000;
+            self.af[0] |= 0b0100_0000;
         } else {
-            self.af[0] &= !0b0001_0000;
+            self.af[0] &= !0b0100_0000;
         }
     }
 
@@ -965,6 +964,14 @@ impl Cpu {
             self.af[0] |= 0b0010_0000;
         } else {
             self.af[0] &= !0b0010_0000;
+        }
+    }
+
+    fn flag_c_set(&mut self, v: bool) {
+        if v {
+            self.af[0] |= 0b0001_0000;
+        } else {
+            self.af[0] &= !0b0001_0000;
         }
     }
 
