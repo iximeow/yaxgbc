@@ -33,6 +33,7 @@ fn do_ui(gb_state: Arc<Mutex<GBC>>) {
         println!("scx: {}", gb.management_bits[SCX]);
         println!("lcdc: {:08b}", gb.lcd.lcdc);
         println!("stat: {:08b}", gb.management_bits[STAT]);
+        /*
         let vbk = gb.management_bits[VBK];
         let tilemap_base = gb.lcd.background_tile_base() as usize;
         println!("vbk: {:08b}", vbk);
@@ -51,6 +52,7 @@ fn do_ui(gb_state: Arc<Mutex<GBC>>) {
             println!("");
         }
         println!("");
+        */
 
         // eprintln!("{:?}", &vram[0..0x1800]);
 
@@ -67,6 +69,7 @@ fn do_ui(gb_state: Arc<Mutex<GBC>>) {
             eprintln!("");
         }
         */
+        /*
         const PXMAP: [&'static str; 16] = [
             ".", "▖", "▗", "▄", "▘", "▌", "▚", "▙", "▝", "▞", "▐", "▟", "▀", "▛", "▜", "▓",
         ];
@@ -84,14 +87,13 @@ fn do_ui(gb_state: Arc<Mutex<GBC>>) {
             }
             write!(screen, "\n");
         }
-        /*
+        */
         for i in 0..144 {
             for j in 0..160 {
                 write!(screen, "{}", [".", "+", "*", "#"][gb.lcd.display[(i * 160 + j) as usize] as usize]);
             }
             write!(screen, "\n");
         }
-        */
         println!("{}", screen);
         std::mem::drop(gb);
         std::thread::sleep(std::time::Duration::from_millis(33));
@@ -121,7 +123,7 @@ fn main() {
 
     let mut i = 0;
     loop {
-        let frame_target = SystemTime::now() + Duration::from_millis(16);
+//        let frame_target = SystemTime::now() + Duration::from_millis(16);
 
         let mut gb = sins.lock().unwrap();
         let vblank_before = gb.management_bits[IF] & 1;
@@ -133,14 +135,14 @@ fn main() {
 
         let vblank_fired = vblank_before == 0 && vblank_after == 1;
 
-        let now = SystemTime::now();
+//        let now = SystemTime::now();
 
 //        if (vblank_fired && now < frame_target) || (i % 655360 == 655300) {
 //            std::thread::sleep(frame_target.duration_since(now).unwrap());
 //            i = 0;
 //        }
-        if i % 4 == 0 {
-            std::thread::sleep(Duration::from_micros(1));
+        if i % 8 == 0 {
+//            std::thread::sleep(Duration::from_micros(1));
         }
         i += 1;
     }
@@ -298,7 +300,7 @@ impl Lcd {
 
     fn set_lcdc(&mut self, new_lcdc: u8) {
         if self.mode != 1 {
-            eprintln!("TODO: allowed to set lcdc bits outside mode 1?");
+//            eprintln!("set lcdc to {:08b} outside mode 1?", new_lcdc);
         }
         self.lcdc = new_lcdc;
     }
@@ -329,6 +331,11 @@ impl Lcd {
         if screen_time > Self::SCREEN_TIME {
             // ok, screen's done and we're resetting to mode 2 (exiting mode 1)
             eprintln!("screen done");
+            /*
+            for i in 0..self.display.len() {
+                self.display[i] = 0;
+            }
+            */
             self.current_draw_start += (screen_time / Self::SCREEN_TIME) * Self::SCREEN_TIME;
             self.ly = 0;
             self.current_line_start = self.current_draw_start;
@@ -774,6 +781,9 @@ impl MemoryBanks for MemoryMapping<'_> {
             } else if reg == HDMA5 {
                 self.dma_requested = true;
                 self.management_bits[reg] = value;
+            } else if reg == SCX {
+//                eprintln!("SCX set to {:02x}", value);
+                self.management_bits[reg] = value;
             } else if reg == TAC {
                 if value & 0xf8 != 0 {
                     eprintln!("bogus TAC value: {:02x}", value);
@@ -1011,6 +1021,10 @@ impl GBC {
             dma_requested: false,
         };
 
+        if self.clock > 130040000 {
+            self.verbose = true;
+        }
+
         if self.verbose {
 //        if true {
             let mut reader = BankReader::read_at(&mut mem_map, self.cpu.pc);
@@ -1024,6 +1038,7 @@ impl GBC {
             } else {
                 eprintln!("  addr: {}", translated);
             }
+//            eprintln!("ram (first 512b): {:?}", &mem_map.ram[0..512]);
 //            eprintln!("  {:?}", instr);
         }
 
@@ -1050,6 +1065,7 @@ impl GBC {
             panic!("loop detected");
         }
         */
+        /*
         if self.cpu.pc == 0x1c2 {
             eprintln!("pc: {}", mem_map.translate_address(self.cpu.pc));
             eprintln!("rom addr: {}", mem_map.cart.translate_address(self.cpu.pc));
@@ -1059,37 +1075,36 @@ impl GBC {
             let instr = decoder.decode(&mut reader).unwrap();
             eprintln!("pc={:#04x} {}", self.cpu.pc, instr.decorate(&self.cpu, &mem_map));
             self.cpu.step(&mut mem_map);
-            eprintln!("{:?}", &self.cpu);
-            eprintln!("emu breakpoint");
+//            eprintln!("{:?}", &self.cpu);
+//            eprintln!("emu breakpoint");
 //            self.verbose = true;
 //            self.cpu.verbose = true;
         }
+        */
 
         if self.verbose {
             eprintln!("clock: {}", self.clock);
             eprint!("{:?}", &self.cpu);
-            /*
             let stack_entries = std::cmp::min(std::cmp::max(32, 0x10000 - self.cpu.sp as u32), 64);
             let end = std::cmp::min(0x10000, self.cpu.sp as u32 + stack_entries);
-            let start = end - stack_entries;
+            let start = end - stack_entries - 0x10;
             for i in 0..(stack_entries / 2) {
                 if i % 8 == 0 {
-                    eprint!("    {:04x}:", start + (i * 2) / 8);
+                    eprint!("    {:04x}:", start + (i * 2));
                 }
                 eprint!(" {:02x}{:02x}", mem_map.load((start + i * 2 + 1) as u16), mem_map.load((start + i * 2) as u16));
                 if i % 8 == 7 {
                     eprintln!("");
                 }
             }
-            */
         }
 
         if self.in_boot {
             let boot_rom_disable = mem_map.load(0xff50);
             if boot_rom_disable != 0 {
                 eprintln!("boot rom complete, switching to cart");
-//                    self.verbose = true;
-//                    self.cpu.verbose = true;
+//                self.verbose = true;
+//                self.cpu.verbose = true;
                 self.in_boot = false;
             }
         }
@@ -1439,6 +1454,7 @@ impl MemoryBanks for MBC3 {
                 },
                 _ => {
                     eprintln!("TODO: latch clock data");
+                    self.rtc = [59, 59, 59, 59, 59];
                //     panic!("latch clock data")
                 },
             }
@@ -1515,7 +1531,7 @@ impl MemoryBanks for MBC5 {
             let reg_bits = addr >> 12;
             match reg_bits {
                 0 | 1 => { self.ram_enable = value; },
-                2 => { self.rom_bank[0] = value; },
+                2 => { if value == 0x70 { panic!("gotcha"); }; self.rom_bank[0] = value; },
                 3 => { self.rom_bank[1] = value; },
                 _ => { self.ram_bank = value; },
             }

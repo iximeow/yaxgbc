@@ -252,6 +252,9 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
         Ok(())
     }
     fn on_ld_8b_deref_addr_a(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
+        if addr == 0xde04 {
+            eprintln!("storing {:#02x}", addr);
+        }
         self.storage.store(addr, self.cpu.af[1]);
         Ok(())
     }
@@ -892,7 +895,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
     }
     fn on_rst(&mut self, imm: u8) -> Result<(), <SM83 as Arch>::DecodeError> {
         if imm == 0x38 {
-            panic!("probably bug. do you really mean to run 0xff?");
+            eprintln!("probably bug. do you really mean to run 0xff?");
         }
         self.cpu.push(self.storage, self.cpu.pc);
         self.cpu.pc = imm as u16;
@@ -1024,6 +1027,7 @@ impl Cpu {
                 memory.management_bits[crate::IF as usize] ^= 1 << interrupt_nr;
 
                 let interrupt_addr = 0x40 + (8 * interrupt_nr) as u16;
+                eprintln!("interrupt fired {} to {:#04x}", interrupt_nr, interrupt_addr);
                 self.pc = interrupt_addr;
                 // and finally, enter the ISR with interrupts disabled again.
                 self.ime = false;
