@@ -255,11 +255,8 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
         self.storage.store(addr, self.cpu.af[1]);
         Ok(())
     }
-    fn on_ld_hl_deref_sp_offset(&mut self, ofs: i8) -> Result<(), <SM83 as Arch>::DecodeError> {
-        let addr = self.cpu.sp.wrapping_add(ofs as i16 as u16);
-        let low = self.storage.load(addr);
-        let high = self.storage.load(addr.wrapping_add(1));
-        self.cpu.hl = [low, high];
+    fn on_ld_hl_sp_offset(&mut self, ofs: i8) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.cpu.hl = self.cpu.sp.wrapping_add(ofs as i16 as u16).to_le_bytes();
         Ok(())
     }
     fn on_ldh_a_deref_high_8b(&mut self, ofs: u8) -> Result<(), <SM83 as Arch>::DecodeError> {
@@ -661,9 +658,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
                     self.cpu.af[0] |= 0b0001_0000;
                 }
                 let rotated = (v << 1) | c;
-                if rotated == 0 {
-                    self.cpu.af[0] |= 0b1000_0000;
-                }
+                self.cpu.flag_z_set(rotated == 0);
                 rotated
             }
             RotOp::RR => {
@@ -673,9 +668,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
                     self.cpu.af[0] |= 0b0001_0000;
                 }
                 let rotated = (v >> 1) | (c << 7);
-                if rotated == 0 {
-                    self.cpu.af[0] |= 0b1000_0000;
-                }
+                self.cpu.flag_z_set(rotated == 0);
                 rotated
             }
             RotOp::RLC => {
@@ -686,9 +679,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
                     self.cpu.af[0] |= 0b0001_0000;
                 }
                 let rotated = (v << 1) | c;
-                if rotated == 0 {
-                    self.cpu.af[0] |= 0b1000_0000;
-                }
+                self.cpu.flag_z_set(rotated == 0);
                 rotated
             }
             RotOp::RRC => {
@@ -699,9 +690,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
                     self.cpu.af[0] |= 0b0001_0000;
                 }
                 let rotated = (v >> 1) | c;
-                if rotated == 0 {
-                    self.cpu.af[0] |= 0b1000_0000;
-                }
+                self.cpu.flag_z_set(rotated == 0);
                 rotated
             }
             RotOp::SLA => {
@@ -710,9 +699,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
                     self.cpu.af[0] |= 0b0001_0000;
                 }
                 let shifted = v << 1;
-                if shifted == 0 {
-                    self.cpu.af[0] |= 0b1000_0000;
-                }
+                self.cpu.flag_z_set(shifted == 0);
                 shifted
             }
             RotOp::SRA => {
@@ -721,9 +708,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
                     self.cpu.af[0] |= 0b0001_0000;
                 }
                 let shifted = ((v as i8) >> 1) as u8;
-                if shifted == 0 {
-                    self.cpu.af[0] |= 0b1000_0000;
-                }
+                self.cpu.flag_z_set(shifted == 0);
                 shifted
             }
             RotOp::SRL => {
@@ -732,17 +717,13 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
                     self.cpu.af[0] |= 0b0001_0000;
                 }
                 let shifted = v >> 1;
-                if shifted == 0 {
-                    self.cpu.af[0] |= 0b1000_0000;
-                }
+                self.cpu.flag_z_set(shifted == 0);
                 shifted
             }
             RotOp::SWAP => {
                 let swapped = (v >> 4) | (v << 4);
-                self.cpu.af[0] = 0b0000_0000;
-                if swapped == 0 {
-                    self.cpu.af[0] |= 0b1000_0000;
-                }
+                self.cpu.flags_clear();
+                self.cpu.flag_z_set(swapped == 0);
                 swapped
             }
         };
@@ -809,39 +790,31 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
     fn on_rrca(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
         let v = self.cpu.af[1];
         let mut c = 0;
-        self.cpu.af[0] = 0b0000_0000;
+        self.cpu.flags_clear();
+        self.cpu.flag_c_set(v & 0x01 != 0);
         if v & 0x01 != 0 {
             c = 0x80;
-            self.cpu.af[0] |= 0b0001_0000;
         }
         let rotated = (v >> 1) | c;
-        if rotated == 0 {
-            self.cpu.af[0] |= 0b1000_0000;
-        }
+        self.cpu.flag_z_set(rotated == 0);
         self.cpu.af[1] = rotated;
         Ok(())
     }
     fn on_rla(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
         let v = self.cpu.af[1];
-        let c = (self.cpu.af[0] >> 4) & 0b0001;
-        self.cpu.af[0] = 0b0000_0000;
-        if v & 0x80 != 0 {
-            self.cpu.af[0] |= 0b0001_0000;
-        }
+        let c = self.cpu.flag_c() as u8;
+        self.cpu.flags_clear();
+        self.cpu.flag_c_set(v & 0x80 != 0);
         let rotated = (v << 1) | c;
-        if rotated == 0 {
-            self.cpu.af[0] |= 0b1000_0000;
-        }
+        self.cpu.flag_z_set(rotated == 0);
         self.cpu.af[1] = rotated;
         Ok(())
     }
     fn on_rra(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
         let v = self.cpu.af[1];
         let c = self.cpu.af[1] & 1;
-        self.cpu.af[0] = 0b0000_0000;
-        if c != 0 {
-            self.cpu.af[0] |= 0b0001_0000;
-        }
+        self.cpu.flags_clear();
+        self.cpu.flag_c_set(c != 0);
         let rotated = (v >> 1) | (c << 7);
         /*
         // allegedly rra never sets zero
@@ -967,9 +940,31 @@ impl Cpu {
         }
     }
 
+    fn flags_clear(&mut self) {
+        self.af[0] = 0b0000_0000;
+    }
+
+    fn flag_z_set(&mut self, v: bool) {
+        if v {
+            self.af[0] |= 0b1000_0000;
+        } else {
+            self.af[0] &= !0b1000_0000;
+        }
+    }
+
+    fn flag_c_set(&mut self, v: bool) {
+        if v {
+            self.af[0] |= 0b0001_0000;
+        } else {
+            self.af[0] &= !0b0001_0000;
+        }
+    }
+
     fn flag_h_set(&mut self, v: bool) {
         if v {
             self.af[0] |= 0b0010_0000;
+        } else {
+            self.af[0] &= !0b0010_0000;
         }
     }
 
@@ -1118,6 +1113,18 @@ mod test {
             let mut result = cpu.clone();
             result.pc += 2;
             super::execute_test(&mut cpu, &[0x20, 0x00]);
+
+            assert_eq!(cpu, result);
+        }
+
+        #[test]
+        fn test_ld_special() {
+            let mut cpu = Cpu::new();
+            cpu.sp = 0x1234;
+            let mut result = cpu.clone();
+            result.hl = 0x1284u16.to_le_bytes();
+            result.pc += 2;
+            super::execute_test(&mut cpu, &[0xf8, 0x50]);
 
             assert_eq!(cpu, result);
         }

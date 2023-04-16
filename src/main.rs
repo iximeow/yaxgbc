@@ -467,14 +467,14 @@ impl Lcd {
                     let tile_base = self.background_tile_base();
 //                    eprintln!("tile base: {:04x}", tile_base);
 //                    eprintln!("tile y: {}.{}", self.ly / 8, self.ly % 8);
-                    let background_y = scy + self.ly;
+                    let background_y = scy.wrapping_add(self.ly);
                     let background_x = scx + 0;
                     let tile_y = (background_y / 8) as u16;
                     let tile_yoffs = background_y as u16 % 8;
-                    for i in 0..160 {
+                    for i in 0..160u8 {
                         // NOTE: if the screen is scrolled such that x would overflow past the end
                         // of the tile map, x waps back around to the left. i think.
-                        let line_x = i + background_x;
+                        let line_x = i.wrapping_add(background_x);
                         let tile_x = (line_x / 8) as u16;
                         let tile_nr = tile_y * 32 + tile_x;
                         let (tile_data, attributes) = self.tile_lookup_by_nr(vram, tile_nr);
