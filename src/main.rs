@@ -1120,13 +1120,12 @@ impl MemoryBankControllerType {
                     RamStyle::Banked4x8kb => vec![0u8; 32 * 1024].into_boxed_slice(),
                 };
 
-                Box::new(MBC3 {
+                Box::new(MBC1 {
                     ram_enable: 0u8,
                     rom_bank: 0u8,
                     ram_bank: 0u8,
                     rom: rom_image,
                     ram: ram,
-                    rtc: [0u8; 5],
                 })
             }
             MemoryBankControllerType::MBC3 => {
@@ -1301,7 +1300,7 @@ trait MemoryBanks: fmt::Debug {
 #[derive(Debug)]
 struct MBC1 {
     ram_enable: u8,
-    rom_bank: [u8; 2],
+    rom_bank: u8,
     ram_bank: u8,
     rom: Box<[u8]>,
     ram: Box<[u8]>,
@@ -1327,7 +1326,7 @@ impl MemoryBanks for MBC1 {
         if addr <= 0x3fff {
             MemoryAddress::rom(addr as u32)
         } else if addr < 0x7fff {
-            let bank = u16::from_le_bytes(self.rom_bank) as usize;
+            let bank = self.rom_bank as usize;
             let bank = if bank == 0 {
                 1
             } else {
@@ -1352,9 +1351,9 @@ impl MemoryBanks for MBC1 {
             let reg_bits = addr >> 12;
             match reg_bits {
                 0 | 1 => { self.ram_enable = value; },
-                2 => { self.rom_bank[0] = value; },
-                3 => { self.rom_bank[1] = value; },
-                _ => { self.ram_bank = value; },
+                2 | 3 => { self.rom_bank = value & 0b000_11111; },
+                4 | 5 => { self.ram_bank = value; },
+                _ => { panic!("mbc1 bank mode select") },
             }
         } else if addr < 0xc000 {
             if self.ram_enable & 0x0f != 0x0a {
