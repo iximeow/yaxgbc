@@ -629,7 +629,7 @@ impl MemoryBanks for MemoryMapping<'_> {
             } else {
                 nr
             };
-            let addr = (addr as usize - 0xc000) + nr * 0x1000;
+            let addr = (addr as usize - 0xd000) + nr * 0x1000;
             MemoryAddress::ram(addr as u32)
         } else if addr < 0xfe00 {
             // aliases [c000,ddff]
@@ -732,7 +732,7 @@ impl MemoryBanks for MemoryMapping<'_> {
             } else {
                 nr
             };
-            self.ram[(addr as usize - 0xc000) + nr * 0x1000] = value;
+            self.ram[(addr as usize - 0xd000) + nr * 0x1000] = value;
         } else if addr < 0xfe00 {
             self.ram[addr as usize - 0xe000] = value;
         } else if addr < 0xfea0 {
@@ -1614,5 +1614,86 @@ impl GBCCart {
         eprintln!("cartridge type {:#02x}, features: {:?}", mapper.load(0x147), features);
 
         Ok(Self { features, mapper })
+    }
+}
+
+mod test {
+    use super::*;
+
+    fn with_test_mapping<U>(f: impl Fn(MemoryMapping) -> U) -> U {
+        let mut rom_data = Vec::new();
+        for i in 1..129 {
+            rom_data.extend_from_slice(&[i; 1024]);
+        }
+        let mut rom = MBC5 {
+            ram_enable: 0u8,
+            rom_bank: [0u8; 2],
+            ram_bank: 0u8,
+            rom: rom_data.into_boxed_slice(),
+            ram: vec![0u8; 32 * 1024].into_boxed_slice(),
+        };
+        let mut wram = [0u8; 32 * 1024];
+        let mut vram = [0u8; 16 * 1024];
+        let mut lcd = crate::Lcd::new();
+        let mut management_bits = [0u8; 0x200];
+
+        let mut memory = MemoryMapping {
+            cart: &mut rom,
+            ram: &mut wram,
+            vram: &mut vram,
+            lcd: &mut lcd,
+            management_bits: &mut management_bits,
+            verbose: false,
+            dma_requested: false,
+        };
+
+        f(memory)
+    }
+
+    #[test]
+    fn test_address_translation() {
+        with_test_mapping(|mut memory| {
+            memory.ram[0x000_000] = 0x00;
+            assert_eq!(memory.load(0xc000), 0x00);
+            memory.ram[0x000_000] = 0xaa;
+            assert_eq!(memory.load(0xc000), 0xaa);
+
+            memory.ram[0x000_001] = 0xff;
+            memory.store(0xc001, 0xab);
+            assert_eq!(memory.ram[0x000_001], 0xab);
+
+            memory.ram[0x001_001] = 0xff;
+            memory.store(0xd001, 0xab);
+            assert_eq!(memory.ram[0x001_001], 0xab);
+
+            memory.management_bits[SVBK] = 0x01;
+            assert_eq!(memory.load(0xff70), 0x01);
+            memory.store(0xff70, 0x03);
+            assert_eq!(memory.management_bits[SVBK], 0x03);
+
+            assert_ne!(memory.load(0xd001), 0xab);
+
+            memory.ram[0x003_001] = 0xff;
+            memory.store(0xd001, 0xab);
+            assert_eq!(memory.ram[0x003_001], 0xab);
+        })
+    }
+
+    #[test]
+    fn test_rom_access() {
+        with_test_mapping(|mut memory| {
+            assert_eq!(memory.load(0x03ff), 1);
+            assert_eq!(memory.load(0x0400), 2);
+            assert_eq!(memory.load(0x3fff), 16);
+
+            memory.store(0x2000, 1);
+            assert_eq!(memory.load(0x4001), 17);
+
+            memory.store(0x2000, 4);
+            assert_eq!(memory.load(0x4001), 65);
+
+            memory.store(0x2000, 0);
+            assert_eq!(memory.load(0x4001), 1);
+        })
     }
 }
