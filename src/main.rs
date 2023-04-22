@@ -344,6 +344,8 @@ impl Lcd {
 
         let mut line_time = self.lcd_clock - self.current_line_start;
 
+        let mut vblank_hit = false;
+
         if line_time > Self::LINE_TIME {
             // ok, line's done and we're resetting to mode 2 (exiting mode 0)
             // eprintln!("line {} done", self.ly);
@@ -363,6 +365,9 @@ impl Lcd {
 
             self.current_line_start += (line_time / Self::LINE_TIME) * Self::LINE_TIME;
             self.ly += 1;
+            if self.ly == 144 {
+                vblank_hit = true;
+            }
             line_time -= line_time % Self::LINE_TIME;
         }
 
@@ -380,7 +385,7 @@ impl Lcd {
                 should_interrupt = true;
             }
             self.mode = 1;
-            (true, should_interrupt)
+            (vblank_hit, should_interrupt)
         } else {
             if line_time < 80 {
                 let prior_mode = self.mode;
