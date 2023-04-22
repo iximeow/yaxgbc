@@ -1012,7 +1012,7 @@ impl Cpu {
             // otherwise, interrupts are enabled, and if none have fired we will remain in
             // low-power mode (advancing by one clock as the rest of the machine still has to
             // operate).
-            let interrupts = memory.management_bits[crate::IF as usize] & memory.management_bits[crate::IE as usize];
+            let interrupts = memory.management_bits[crate::IF as usize] & memory.management_bits[crate::IE as usize] & 0x1f;
             if interrupts != 0 {
                 // have an interrupt, update state appropriately and wake from halt
                 self.halted = false;
