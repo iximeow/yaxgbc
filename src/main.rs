@@ -1030,10 +1030,6 @@ impl GBC {
             dma_requested: false,
         };
 
-        if self.clock > 130040000 {
-            self.verbose = true;
-        }
-
         if self.verbose {
 //        if true {
             let mut reader = BankReader::read_at(&mut mem_map, self.cpu.pc);
