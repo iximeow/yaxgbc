@@ -404,10 +404,14 @@ impl Lcd {
                         let x_end = self.oam[object_addr + 1];
 
                         // TODO: respect LCDC.2 for double-height sprites
-                        let sprite_height = 8;
+                        let sprite_height = if self.lcdc & 0b100 == 0 {
+                            8
+                        } else {
+                            16
+                        };
 
                         let selected_line = self.ly as i16 - ((y_end as i16) - 16);
-                        if selected_line < 0 || selected_line > sprite_height {
+                        if selected_line < 0 || selected_line >= sprite_height {
                             continue;
                         }
 
