@@ -135,16 +135,317 @@ fn main() {
 
         let vblank_fired = vblank_before == 0 && vblank_after == 1;
 
-//        let now = SystemTime::now();
+        let now = SystemTime::now();
 
-//        if (vblank_fired && now < frame_target) || (i % 655360 == 655300) {
-//            std::thread::sleep(frame_target.duration_since(now).unwrap());
-//            i = 0;
-//        }
-        if i % 8 == 0 {
-//            std::thread::sleep(Duration::from_micros(1));
+        if (vblank_fired && now < frame_target) || (i % 655360 == 655300) {
+            std::thread::sleep(frame_target.duration_since(now).unwrap());
+            i = 0;
         }
+//        if i % 32 == 0 {
+//            std::thread::sleep(Duration::from_micros(1));
+//        }
         i += 1;
+    }
+}
+
+struct Apu {
+    apu_active: bool,
+    nr50: u8,
+    nr51: u8,
+    channel_active: [bool; 4],
+    channel_1_pace: i8,
+    channel_1_sweep_slope: u8,
+    channel_1_wave_duty: u8,
+    channel_1_initial_length: u8,
+    channel_1_initial_volume: u8,
+    channel_1_envelope_direction: bool,
+    channel_1_sweep_pace: u8,
+    channel_1_wavelength: u16,
+    channel_1_sound_length_enable: bool,
+    channel_1_trigger: bool,
+    channel_2_pace: i8,
+    channel_2_sweep_slope: u8,
+    channel_2_wave_duty: u8,
+    channel_2_initial_length: u8,
+    channel_2_initial_volume: u8,
+    channel_2_envelope_direction: bool,
+    channel_2_sweep_pace: u8,
+    channel_2_wavelength: u16,
+    channel_2_sound_length_enable: bool,
+    channel_2_trigger: bool,
+    channel_3_dac_enable: bool,
+    channel_3_length_timer: u8,
+    channel_3_output_level: u8,
+    channel_3_wavelength: u16,
+    channel_3_trigger: bool,
+    channel_3_sound_length_enable: bool,
+    channel_3_wave_ram: [u8; 16],
+    channel_4_length_timer: u8,
+    channel_4_initial_volume: u8,
+    channel_4_envelope_direction: bool,
+    channel_4_sweep_pace: u8,
+    channel_4_clock_shift: u8,
+    channel_4_lfsr_width: u8,
+    channel_4_clock_divider: u8,
+    channel_4_wavelength: u16,
+    channel_4_trigger: bool,
+    channel_4_sound_length_enable: bool,
+}
+
+impl Apu {
+    fn store(&mut self, address: usize, value: u8) {
+        match address {
+            NR10 => {
+                let sweep_pace = (value & 0x70) >> 4;
+                let sweep_direction = (value & 0x08) >> 3;
+                let slope_control = (value & 0x07);
+                eprintln!("todo: NR10");
+            }
+            NR11 => {
+                let wave_duty = (value & 0xc0) >> 6;
+                let initial_length_timer = value & 0x3f;
+                self.channel_1_wave_duty = wave_duty;
+                self.channel_1_initial_length = initial_length_timer;
+            },
+            NR12 => {
+                let initial_volume = (value & 0xf0) >> 4;
+                let envelope_direction = ((value & 0x08) >> 3) != 0;
+                let sweep_pace = value & 0x07;
+                self.channel_1_initial_volume = initial_volume;
+                self.channel_1_envelope_direction = envelope_direction;
+                self.channel_1_sweep_pace = sweep_pace;
+            }
+            NR13 => {
+                self.channel_1_wavelength =
+                    (self.channel_1_wavelength & 0xff00) |
+                    (value as u16);
+            }
+            NR14 => {
+                let trigger = (value & 0x80) != 0;
+                let sound_length_enable = (value & 0x40) != 0;
+                let wavelength_hi = (value & 0x07) as u16;
+
+                self.channel_1_trigger = trigger;
+                self.channel_1_sound_length_enable = trigger;
+                self.channel_1_wavelength =
+                    (self.channel_1_wavelength & 0x00ff) |
+                    (wavelength_hi << 8);
+            }
+            0x115 => {
+                // not used? not documented at least
+            }
+            0x11f => {
+                // not used? not documented at least
+            }
+            NR21 => {
+                let wave_duty = (value & 0xc0) >> 6;
+                let initial_length_timer = value & 0x3f;
+                self.channel_2_wave_duty = wave_duty;
+                self.channel_2_initial_length = initial_length_timer;
+            },
+            NR22 => {
+                let initial_volume = (value & 0xf0) >> 4;
+                let envelope_direction = ((value & 0x08) >> 3) != 0;
+                let sweep_pace = value & 0x07;
+                self.channel_2_initial_volume = initial_volume;
+                self.channel_2_envelope_direction = envelope_direction;
+                self.channel_2_sweep_pace = sweep_pace;
+            }
+            NR23 => {
+                self.channel_2_wavelength =
+                    (self.channel_2_wavelength & 0xff00) |
+                    (value as u16);
+            }
+            NR24 => {
+                let trigger = (value & 0x80) != 0;
+                let sound_length_enable = (value & 0x40) != 0;
+                let wavelength_hi = (value & 0x07) as u16;
+
+                self.channel_2_trigger = trigger;
+                self.channel_2_sound_length_enable = trigger;
+                self.channel_2_wavelength =
+                    (self.channel_2_wavelength & 0x00ff) |
+                    (wavelength_hi << 8);
+            }
+            NR30 => {
+                self.channel_3_dac_enable = (value & 0x80) != 0;
+            },
+            NR31 => {
+                self.channel_3_length_timer = value;
+            }
+            NR32 => {
+                let output_level = (value & 0x60) >> 5;
+                self.channel_3_output_level = output_level;
+            }
+            NR33 => {
+                // TODO: pan docs says that channel 3 wavelength changes take effect the next time
+                // wave RAM is read
+                self.channel_3_wavelength =
+                    (self.channel_3_wavelength & 0xff00) |
+                    (value as u16);
+            }
+            NR34 => {
+                let trigger = (value & 0x80) != 0;
+                let sound_length_enable = (value & 0x40) != 0;
+                let wavelength_hi = (value & 0x07) as u16;
+
+                self.channel_3_trigger = trigger;
+                self.channel_3_sound_length_enable = trigger;
+                self.channel_3_wavelength =
+                    (self.channel_3_wavelength & 0x00ff) |
+                    (wavelength_hi << 8);
+            }
+            NR41 => {
+                self.channel_4_length_timer = value & 0x3f;
+            }
+            NR42 => {
+                let initial_volume = (value & 0xf0) >> 4;
+                let envelope_direction = ((value & 0x08) >> 3) != 0;
+                let sweep_pace = value & 0x07;
+                self.channel_4_initial_volume = initial_volume;
+                self.channel_4_envelope_direction = envelope_direction;
+                self.channel_4_sweep_pace = sweep_pace;
+            }
+            NR43 => {
+                self.channel_4_clock_shift = (value >> 4);
+                self.channel_4_lfsr_width = if (value >> 3) & 1 == 0 {
+                    15
+                } else {
+                    7
+                };
+                self.channel_4_clock_divider = value & 0x07;
+            }
+            NR44 => {
+                let trigger = (value & 0x80) != 0;
+                let sound_length_enable = (value & 0x40) != 0;
+
+                self.channel_4_trigger = trigger;
+                self.channel_4_sound_length_enable = trigger;
+            }
+            NR50 => {
+                eprintln!("support master volume...");
+                self.nr50 = value;
+            }
+            NR51 => {
+                eprintln!("support sound panning...");
+                self.nr51 = value;
+            }
+            NR52 => {
+                self.apu_active = (value & 0x80 != 0) as bool;
+            }
+            0x130..=0x13f => {
+                self.channel_3_wave_ram[address - 0x130] = value;
+            }
+            _ => {
+                panic!("store unhandled register {:04x} (set to {:02x})", address, value);
+            }
+        }
+    }
+    fn load(&self, address: usize) -> u8 {
+        match address {
+            NR30 => {
+                if self.channel_3_dac_enable {
+                    0x80
+                } else {
+                    0x00
+                }
+            },
+            NR50 => {
+                self.nr50
+            }
+            NR51 => {
+                self.nr51
+            }
+            NR52 => {
+                (self.apu_active as u8) << 7 |
+                (self.channel_active[3] as u8) << 3 |
+                (self.channel_active[2] as u8) << 2 |
+                (self.channel_active[1] as u8) << 1 |
+                (self.channel_active[0] as u8) << 0
+            },
+            _ => {
+                panic!("load unhandled register {:04x}", address);
+            }
+        }
+    }
+/*
+const NR10: usize = 0x110;
+const NR11: usize = 0x111;
+const NR12: usize = 0x112;
+const NR13: usize = 0x113;
+const NR14: usize = 0x114;
+const NR21: usize = 0x116;
+const NR22: usize = 0x117;
+const NR23: usize = 0x118;
+const NR24: usize = 0x119;
+const NR30: usize = 0x11a;
+const NR31: usize = 0x11b;
+const NR32: usize = 0x11c;
+const NR33: usize = 0x11d;
+const NR34: usize = 0x11e;
+const NR41: usize = 0x120;
+const NR42: usize = 0x121;
+const NR43: usize = 0x122;
+const NR44: usize = 0x123;
+const NR50: usize = 0x124;
+const NR51: usize = 0x125;
+const NR52: usize = 0x126;
+const WAVE_RAM_END: usize = 0x13f;
+const WAVE_RAM_START: usize = 0x130;
+*/
+    fn new() -> Self {
+        Self {
+            apu_active: false,
+            nr50: 0,
+            nr51: 0,
+            channel_active: [false; 4],
+            channel_1_pace: 0,
+            channel_1_sweep_slope: 0,
+            channel_1_wave_duty: 0,
+            channel_1_initial_length: 0,
+            channel_1_initial_volume: 0,
+            channel_1_envelope_direction: false,
+            channel_1_sweep_pace: 0,
+            channel_1_wavelength: 0,
+            channel_1_sound_length_enable: false,
+            channel_1_trigger: false,
+            channel_2_pace: 0,
+            channel_2_sweep_slope: 0,
+            channel_2_wave_duty: 0,
+            channel_2_initial_length: 0,
+            channel_2_initial_volume: 0,
+            channel_2_envelope_direction: false,
+            channel_2_sweep_pace: 0,
+            channel_2_wavelength: 0,
+            channel_2_sound_length_enable: false,
+            channel_2_trigger: false,
+            channel_3_dac_enable: false,
+            channel_3_length_timer: 0,
+            channel_3_output_level: 0,
+            channel_3_wavelength: 0,
+            channel_3_trigger: false,
+            channel_3_sound_length_enable: false,
+            channel_3_wave_ram: [0; 16],
+            channel_4_length_timer: 0,
+            channel_4_initial_volume: 0,
+            channel_4_envelope_direction: false,
+            channel_4_sweep_pace: 0,
+            channel_4_clock_shift: 0,
+            channel_4_lfsr_width: 0,
+            channel_4_clock_divider: 0,
+            channel_4_wavelength: 0,
+            channel_4_trigger: false,
+            channel_4_sound_length_enable: false,
+        }
+    }
+
+    fn advance_clock(&mut self, clocks: u64) {
+    }
+
+    fn set_nr52(&mut self, v: u8) {
+        // bit 7 controls the APU state, buts 0-3 are channel 1-4 state but are read-only
+        // TODO: what happens on writes to bits 0-6? assuming those writes are discarded.
+        self.apu_active = (v & 0x80) != 0;
     }
 }
 
@@ -583,6 +884,7 @@ struct GBCScreen {
 struct GBC {
     cpu: Cpu,
     lcd: Lcd,
+    apu: Apu,
     boot_rom: GBCCart,
     cart: GBCCart,
     in_boot: bool,
@@ -590,7 +892,9 @@ struct GBC {
     vram: [u8; 16 *  1024],
     management_bits: [u8; 0x200],
     clock: u64,
+    div_apu: u64,
     next_div_tick: u64,
+    next_div_apu_tick: u64,
 //    audio: Rc<GBCAudio>,
     verbose: bool,
 }
@@ -600,6 +904,7 @@ struct MemoryMapping<'system> {
     ram: &'system mut [u8],
     vram: &'system mut [u8],
     lcd: &'system mut Lcd,
+    apu: &'system mut Apu,
     management_bits: &'system mut [u8],
     verbose: bool,
     dma_requested: bool,
@@ -686,7 +991,9 @@ impl MemoryBanks for MemoryMapping<'_> {
                     self.management_bits[address as usize]
                 } else if address < 0x180 {
                     let reg = address as usize;
-                    let v = if reg == VBK {
+                    let v = if (reg >= APU_MIN_REG && reg <= APU_MAX_REG) || reg == PCM12 || reg == PCM34 {
+                        self.apu.load(reg)
+                    } else if reg == VBK {
                         // "Reading from this register will return the number of the currently loaded VRAM
                         // bank in bit 0, and all other bits will be set to 1."
                         (self.management_bits[VBK] & 1) | 0b1111_1110
@@ -763,7 +1070,9 @@ impl MemoryBanks for MemoryMapping<'_> {
                 eprintln!("set ${:04x}=${:02x}", addr, value);
             }
             let reg = addr as usize - 0xfe00;
-            if reg == KEY1 {
+            if (reg >= APU_MIN_REG && reg <= APU_MAX_REG) || reg == PCM12 || reg == PCM34 {
+                self.apu.store(reg, value);
+            } else if reg == KEY1 {
                 self.management_bits[reg] |= value & 0b1;
             } else if reg == LY {
                 // read-only register: discard the write
@@ -857,13 +1166,69 @@ const TAC: usize = 0x107;
 const IF: usize = 0x10f;
 // interrupt enable
 // 1=request
-const IE: usize = 0x1ff;
-/*
- * 0x130 - 0x13f
- * Wave pattern RAM
- * CH3 plays from here
- */
-const WAVE: usize = 0x130;
+
+const APU_MIN_REG: usize = 0x110;
+const APU_MAX_REG: usize = 0x13f;
+// Channel 1 sweep
+// Bit 6-4 - Sweep pace
+// Bit 3   - Sweep increase/decrease
+//            0: Addition
+//            1: Subtraction
+// Bit 2-0 - Sweep slope control (n: 0-7)
+// see pan docs for a formula connecting these together
+const NR10: usize = 0x110;
+// Channel 1 length timer & duty cycle
+const NR11: usize = 0x111;
+// Channel 1 volume & envelope
+const NR12: usize = 0x112;
+// Channel 1 wavelength low [write-only]
+const NR13: usize = 0x113;
+// Channel 1 wavelength high & control
+// wavelength: write-only
+// sound length enable: rw
+// trigger: write-only
+const NR14: usize = 0x114;
+// Sound channel 2: identical to channel 1,
+const NR21: usize = 0x116;
+const NR22: usize = 0x117;
+const NR23: usize = 0x118;
+const NR24: usize = 0x119;
+// Sound channel 3: wave output
+const NR30: usize = 0x11a;
+const NR31: usize = 0x11b;
+const NR32: usize = 0x11c;
+const NR33: usize = 0x11d;
+const NR34: usize = 0x11e;
+// Sound channel 4
+const NR41: usize = 0x120;
+const NR42: usize = 0x121;
+const NR43: usize = 0x122;
+const NR44: usize = 0x123;
+// Sound channel 3 wave ram
+const WAVE_RAM_START: usize = 0x130;
+const WAVE_RAM_END: usize = 0x13f;
+// Master volume & VIN panning
+// Bit 7   - Mix VIN into left output  (1=Enable)
+// Bit 6-4 - Left output volume
+// Bit 3   - Mix VIN into right output (1=Enable)
+// Bit 2-0 - Right output volume
+const NR50: usize = 0x124;
+// Bit 7: Mix channel 4 into left output
+// Bit 6: Mix channel 3 into left output
+// Bit 5: Mix channel 2 into left output
+// Bit 4: Mix channel 1 into left output
+// Bit 3: Mix channel 4 into right output
+// Bit 2: Mix channel 3 into right output
+// Bit 1: Mix channel 2 into right output
+// Bit 0: Mix channel 1 into right output
+const NR51: usize = 0x125;
+// Sound on/off
+// Bit 7: All sound on/off (0: turn the API off) (RW)
+// Bit 3: Channel 4 ON flag (read only)
+// Bit 2: Channel 3 ON flag (read only)
+// Bit 1: Channel 2 ON flag (read only)
+// Bit 0: Channel 1 ON flag (read only)
+const NR52: usize = 0x126;
 // LCD control
 // Bit 7 - LCD and PPU enable                   (0=Off, 1=On)
 // Bit 6 - Window tile map area
@@ -932,6 +1297,12 @@ const HDMA5: usize = 0x155;
 // KBytes each. Bank 0 is always available in memory at C000-CFFF, Bank 1-7 can be selected into
 // the address space at D000-DFFF.
 const SVBK: usize = 0x170;
+// readout of digital outputs 1 and 2
+const PCM12: usize = 0x176;
+// readout of digital outputs 3 and 4
+const PCM34: usize = 0x177;
+// Interrupt Enable
+const IE: usize = 0x1ff;
 
 fn dump_mem_region(mem_map: &dyn MemoryBanks, start: u16, words: u16, width: u16) {
     for i in 0..(words / 2) {
@@ -950,6 +1321,7 @@ impl GBC {
         Self {
             cpu: Cpu::new(),
             lcd: Lcd::new(),
+            apu: Apu::new(),
             cart: GBCCart::empty(),
             boot_rom,
             in_boot: true,
@@ -957,7 +1329,9 @@ impl GBC {
             vram: [0u8; 16 * 1024],
             management_bits: [0u8; 0x200],
             clock: 0,
+            div_apu: 0,
             next_div_tick: 256,
+            next_div_apu_tick: 256,
             verbose: false,
         }
     }
@@ -971,12 +1345,31 @@ impl GBC {
         let new_clock = self.clock.wrapping_add(clocks);
 
         let div_overshoot = new_clock as i64 - self.next_div_tick as i64;
-        if div_overshoot > 0 {
+        let _div_ticks = if div_overshoot > 0 {
             // must advance div (now figure out by how much...)
             let div_amount = (div_overshoot as u64 + 255) / 256;
             self.management_bits[DIV] = self.management_bits[DIV].wrapping_add(div_amount as u8);
             self.next_div_tick = self.next_div_tick.wrapping_add(div_amount * 256);
-        }
+            div_amount
+        } else {
+            0
+        };
+
+        let div_apu_overshoot = new_clock as i64 - self.next_div_apu_tick as i64;
+        let _div_apu_ticks = if div_apu_overshoot > 0 {
+            let div_tick_rate = if self.cpu.speed_mode != 0 {
+                512
+            } else {
+                256
+            };
+            // must advance div (now figure out by how much...)
+            let div_amount = (div_overshoot as u64 + div_tick_rate - 1) / div_tick_rate;
+            self.div_apu = self.div_apu.wrapping_add(div_amount);
+            self.next_div_apu_tick = self.next_div_apu_tick.wrapping_add(div_amount * div_tick_rate);
+            div_amount
+        } else {
+            0
+        };
 
         if self.management_bits[TAC] & 0b0100 != 0 {
             let tac_div = [1024, 16, 64, 256][self.management_bits[TAC] as usize & 0b11];
@@ -994,7 +1387,7 @@ impl GBC {
             }
         }
 
-        let lcd_clocks = if self.cpu.speed_mode != 0 {
+        let system_clocks = if self.cpu.speed_mode != 0 {
             // when in Double Speed Mode, the lcd clock is maintained as if it were normal mode;
             // however many clocks we run on the cpu and timers, we run half as many on the lcd
             // clock.
@@ -1003,7 +1396,7 @@ impl GBC {
             clocks
         };
 
-        let (vblank_int, stat_int) = self.lcd.advance_clock(&self.vram, self.management_bits[STAT], self.management_bits[LYC], lcd_clocks, self.management_bits[SCX], self.management_bits[SCY]);
+        let (vblank_int, stat_int) = self.lcd.advance_clock(&self.vram, self.management_bits[STAT], self.management_bits[LYC], system_clocks, self.management_bits[SCX], self.management_bits[SCY]);
         if vblank_int {
             self.management_bits[IF] |= 0b00001;
         }
@@ -1011,6 +1404,7 @@ impl GBC {
             self.management_bits[IF] |= 0b00010;
         }
         self.management_bits[LY] = self.lcd.ly;
+        self.apu.advance_clock(system_clocks);
 
         self.clock = new_clock;
     }
@@ -1025,6 +1419,7 @@ impl GBC {
             ram: &mut self.ram,
             vram: &mut self.vram,
             lcd: &mut self.lcd,
+            apu: &mut self.apu,
             management_bits: &mut self.management_bits,
             verbose: self.verbose,
             dma_requested: false,
@@ -1655,6 +2050,7 @@ mod test {
         let mut wram = [0u8; 32 * 1024];
         let mut vram = [0u8; 16 * 1024];
         let mut lcd = crate::Lcd::new();
+        let mut apu = crate::Apu::new();
         let mut management_bits = [0u8; 0x200];
 
         let mut memory = MemoryMapping {
@@ -1662,6 +2058,7 @@ mod test {
             ram: &mut wram,
             vram: &mut vram,
             lcd: &mut lcd,
+            apu: &mut apu,
             management_bits: &mut management_bits,
             verbose: false,
             dma_requested: false,

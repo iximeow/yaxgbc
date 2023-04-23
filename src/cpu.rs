@@ -1076,11 +1076,13 @@ mod test {
 
         let mut rom = FlatMapper::new(rom.into_boxed_slice());
         let mut lcd = crate::Lcd::new();
+        let mut apu = crate::Apu::new();
         let mut memory = MemoryMapping {
             cart: &mut rom,
             ram: &mut [],
             vram: &mut [],
             lcd: &mut lcd,
+            apu: &mut apu,
             management_bits: &mut [0u8; 512],
             verbose: false,
             dma_requested: false,
