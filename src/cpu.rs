@@ -252,14 +252,21 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
         Ok(())
     }
     fn on_ld_8b_deref_addr_a(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
-        if addr == 0xde04 {
-            eprintln!("storing {:#02x}", addr);
-        }
         self.storage.store(addr, self.cpu.af[1]);
         Ok(())
     }
     fn on_ld_hl_sp_offset(&mut self, ofs: i8) -> Result<(), <SM83 as Arch>::DecodeError> {
-        self.cpu.hl = self.cpu.sp.wrapping_add(ofs as i16 as u16).to_le_bytes();
+        let l = self.cpu.sp;
+        let r = ofs as i16 as u16;
+        let res = l.wrapping_add(r);
+        self.cpu.hl = res.to_le_bytes();
+        self.cpu.af[0] = 0x00;
+        if (l & 0x0f) + (r & 0x0f) >= 0x10 {
+            self.cpu.flag_h_set(true);
+        }
+        if (l & 0xff) + (r & 0xff) >= 0x100 {
+            self.cpu.flag_c_set(true);
+        }
         Ok(())
     }
     fn on_ldh_a_deref_high_8b(&mut self, ofs: u8) -> Result<(), <SM83 as Arch>::DecodeError> {
@@ -301,10 +308,12 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
     fn on_add_sp_i8(&mut self, imm: i8) -> Result<(), <SM83 as Arch>::DecodeError> {
         let sp = self.cpu.sp;
         let other = imm as i16 as u16;
-        let (res, carry) = sp.overflowing_add(other);
+        let res = sp.wrapping_add(other);
+        let carry = (sp as u8 as u16) + (imm as u8 as u16) >= 0x100;
         self.cpu.sp = res;
-        self.cpu.af[0] &= !0b0111_0000;
+        self.cpu.af[0] = 0x00;
         // TODO: is this for a carry out of 7, or out of 15...
+        // gameboy doctor says carry out of 7
         if carry {
             self.cpu.af[0] |= 0b0001_0000;
         }
@@ -436,8 +445,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
                     Reg8b::A => { self.cpu.af[1] },
                 };
                 let res = v & (1 << bit);
-                self.cpu.flags_clear();
-                self.cpu.flag_c_set(true);
+                self.cpu.flag_n_set(false);
                 self.cpu.flag_h_set(true);
                 self.cpu.flag_z_set(res == 0);
             },
@@ -499,13 +507,13 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
                 self.cpu.af[1] = res;
             },
             Op8bAOp::ADC => {
-                let c_in = ((self.cpu.af[0] & 0b0001_0000) > 0) as u8;
+                let c_in = self.cpu.flag_c() as u8;
                 let (res, carry) = left.overflowing_add(right);
                 let (res, c2) = res.overflowing_add(c_in);
                 let c_out = carry || c2;
                 let h = (left & 0xf) + (right & 0xf) + c_in > 0xf;
                 self.cpu.af[0] = 0b0000_0000;
-                if carry { self.cpu.af[0] |= 0b0001_0000; }
+                if c_out { self.cpu.af[0] |= 0b0001_0000; }
                 if h { self.cpu.af[0] |= 0b0010_0000; }
                 if res == 0 { self.cpu.af[0] |= 0b1000_0000; }
                 self.cpu.af[1] = res;
@@ -520,13 +528,13 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
                 self.cpu.af[1] = res;
             },
             Op8bAOp::SBC => {
-                let c_in = ((self.cpu.af[0] & 0b0001_0000) > 0) as u8;
+                let c_in = self.cpu.flag_c() as u8;
                 let (res, carry) = left.overflowing_sub(right);
                 let (res, c2) = res.overflowing_sub(c_in);
                 let c_out = carry || c2;
                 let h = (left & 0xf).wrapping_sub(right & 0xf).wrapping_sub(c_in) > 0xf;
                 self.cpu.af[0] = 0b0100_0000;
-                if carry { self.cpu.af[0] |= 0b0001_0000; }
+                if c_out { self.cpu.af[0] |= 0b0001_0000; }
                 if h { self.cpu.af[0] |= 0b0010_0000; }
                 if res == 0 { self.cpu.af[0] |= 0b1000_0000; }
                 self.cpu.af[1] = res;
@@ -577,13 +585,13 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
                 self.cpu.af[1] = res;
             },
             Op8bAOp::ADC => {
-                let c_in = ((self.cpu.af[0] & 0b0001_0000) > 0) as u8;
+                let c_in = self.cpu.flag_c() as u8;
                 let (res, carry) = left.overflowing_add(right);
                 let (res, c2) = res.overflowing_add(c_in);
                 let c_out = carry || c2;
                 let h = (left & 0xf) + (right & 0xf) + c_in > 0xf;
                 self.cpu.af[0] = 0b0000_0000;
-                if carry { self.cpu.af[0] |= 0b0001_0000; }
+                if c_out { self.cpu.af[0] |= 0b0001_0000; }
                 if h { self.cpu.af[0] |= 0b0010_0000; }
                 if res == 0 { self.cpu.af[0] |= 0b1000_0000; }
                 self.cpu.af[1] = res;
@@ -598,13 +606,13 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
                 self.cpu.af[1] = res;
             },
             Op8bAOp::SBC => {
-                let c_in = ((self.cpu.af[0] & 0b0001_0000) > 0) as u8;
+                let c_in = self.cpu.flag_c() as u8;
                 let (res, carry) = left.overflowing_sub(right);
                 let (res, c2) = res.overflowing_sub(c_in);
                 let c_out = carry || c2;
                 let h = (left & 0xf).wrapping_sub(right & 0xf).wrapping_sub(c_in) > 0xf;
                 self.cpu.af[0] = 0b0100_0000;
-                if carry { self.cpu.af[0] |= 0b0001_0000; }
+                if c_out { self.cpu.af[0] |= 0b0001_0000; }
                 if h { self.cpu.af[0] |= 0b0010_0000; }
                 if res == 0 { self.cpu.af[0] |= 0b1000_0000; }
                 self.cpu.af[1] = res;
@@ -747,6 +755,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
     }
     fn on_pop_af(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
         self.cpu.af = self.cpu.pop(self.storage).to_le_bytes();
+        self.cpu.af[0] &= 0xf0;
         Ok(())
     }
     fn on_push_bc(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
@@ -777,15 +786,12 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
     fn on_rlca(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
         let v = self.cpu.af[1];
         let mut c = 0;
-        self.cpu.af[0] = 0b0000_0000;
+        self.cpu.flags_clear();
+        self.cpu.flag_c_set(v & 0x80 != 0);
         if v & 0x80 != 0 {
             c = 0x01;
-            self.cpu.af[0] |= 0b0001_0000;
         }
         let rotated = (v << 1) | c;
-        if rotated == 0 {
-            self.cpu.af[0] |= 0b1000_0000;
-        }
         self.cpu.af[1] = rotated;
         Ok(())
     }
@@ -798,7 +804,6 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
             c = 0x80;
         }
         let rotated = (v >> 1) | c;
-        self.cpu.flag_z_set(rotated == 0);
         self.cpu.af[1] = rotated;
         Ok(())
     }
@@ -808,16 +813,16 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
         self.cpu.flags_clear();
         self.cpu.flag_c_set(v & 0x80 != 0);
         let rotated = (v << 1) | c;
-        self.cpu.flag_z_set(rotated == 0);
         self.cpu.af[1] = rotated;
         Ok(())
     }
     fn on_rra(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
         let v = self.cpu.af[1];
-        let c = self.cpu.af[1] & 1;
+        let c_out = self.cpu.af[1] & 1;
+        let c_in = self.cpu.flag_c() as u8;
         self.cpu.flags_clear();
-        self.cpu.flag_c_set(c != 0);
-        let rotated = (v >> 1) | (c << 7);
+        self.cpu.flag_c_set(c_out != 0);
+        let rotated = (v >> 1) | (c_in << 7);
         /*
         // allegedly rra never sets zero
         if rotated == 0 {
@@ -828,31 +833,40 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
         Ok(())
     }
     fn on_daa(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
-        let adjust_low = self.cpu.flag_h() || (self.cpu.af[1] & 0x0f) > 9;
-        let adjust_high = self.cpu.flag_c() || (self.cpu.af[1] > 0x99);
-        if self.cpu.flag_n() {
-            if self.cpu.flag_h() {
-                self.cpu.flag_h_set((self.cpu.af[1] & 0x0f) < 6);
-            } else {
-                self.cpu.flag_h_set(false);
-            }
-        } else {
-            self.cpu.flag_h_set((self.cpu.af[1] & 0x0f) >= 0x0a);
-        }
+        let amt: u8 = if !self.cpu.flag_n() {
+            let adjust_low = self.cpu.flag_h() || (self.cpu.af[1] & 0x0f) > 9;
+            let adjust_high = self.cpu.flag_c() || (self.cpu.af[1] > 0x99);
 
-        let amt = match (adjust_low, adjust_high) {
-            (false, false) => 0,
-            (false, true) => {
-                if self.cpu.flag_n() { 0xa0 } else { 0x60 }
+            let mut adjust: u8 = 0;
+
+            if adjust_low {
+                adjust += 0x06;
             }
-            (true, false) => {
-                if self.cpu.flag_n() { 0xfa } else { 0x06 }
+
+            if adjust_high {
+                adjust += 0x60;
             }
-            (true, true) => {
-                if self.cpu.flag_n() { 0x9a } else { 0x66 }
+
+            adjust
+        } else {
+            let mut adjust: u8 = 0;
+
+            if self.cpu.flag_h() {
+                adjust = adjust.wrapping_sub(0x06);
             }
+
+            if self.cpu.flag_c() {
+                adjust = adjust.wrapping_sub(0x60);
+            }
+
+            adjust
         };
-        self.cpu.af[1] = self.cpu.af[1].wrapping_add(amt);
+
+        let (res, carry) = self.cpu.af[1].overflowing_add(amt);
+        self.cpu.af[1] = res;
+        self.cpu.flag_h_set(false);
+        self.cpu.flag_c_set(self.cpu.flag_c() || (!self.cpu.flag_n() && carry));
+        self.cpu.flag_z_set(self.cpu.af[1] == 0);
         Ok(())
     }
     fn on_scf(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
@@ -861,7 +875,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
         Ok(())
     }
     fn on_ccf(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
-        self.cpu.af[0] &= 0b1000_0000;
+        self.cpu.af[0] &= 0b1001_0000;
         self.cpu.af[0] ^= 0b0001_0000;
         Ok(())
     }
@@ -1194,7 +1208,7 @@ mod test {
             assert_eq!(cpu, result);
 
             let test_pairs: &[(u8, (u8, u8))] = &[
-                (0x01, (0x80, 0x10)),
+                (0x01, (0x00, 0x10)),
                 (0x02, (0x01, 0x00)),
                 (0x04, (0x02, 0x00)),
                 (0x08, (0x04, 0x00)),
@@ -1217,6 +1231,17 @@ mod test {
 
                 assert_eq!(cpu, result);
             }
+
+            let mut cpu = Cpu::new();
+            cpu.af[1] = 0x00;
+            cpu.af[0] = 0x10;
+            let mut result = cpu.clone();
+            result.af[1] = 0x80;
+            result.af[0] = 0x00;
+            result.pc += 1;
+            super::execute_test(&mut cpu, &[0x1f]);
+
+            assert_eq!(cpu, result);
         }
 
         #[test]
@@ -1273,6 +1298,19 @@ mod test {
         fn test_adc() {
             let mut cpu = Cpu::new();
             cpu.af[0] = 0x10;
+            cpu.af[1] = 0xfe;
+            let mut result = cpu.clone();
+            result.af[1] = 0x00;
+            result.flag_z_set(true);
+            result.flag_h_set(true);
+            result.flag_c_set(true);
+            result.pc += 2;
+            super::execute_test(&mut cpu, &[0xce, 0x01]);
+
+            assert_eq!(cpu, result);
+
+            let mut cpu = Cpu::new();
+            cpu.af[0] = 0x10;
             cpu.af[1] = 0x10;
             cpu.hl[1] = 0x00;
             let mut result = cpu.clone();
@@ -1315,7 +1353,7 @@ mod test {
             cpu.af[1] = 0xf0;
             cpu.hl[1] = 0x0f;
             let mut result = cpu.clone();
-            result.af[0] = 0xa0;
+            result.af[0] = 0xb0;
             result.af[1] = 0x00;
             result.hl[1] = 0x0f;
             result.pc += 1;
