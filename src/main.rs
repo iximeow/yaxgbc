@@ -96,7 +96,7 @@ fn do_ui(gb_state: Arc<Mutex<GBC>>) {
         }
         println!("{}", screen);
         std::mem::drop(gb);
-        std::thread::sleep(std::time::Duration::from_millis(33));
+        std::thread::sleep(std::time::Duration::from_millis(16));
     }
 }
 
@@ -123,7 +123,7 @@ fn main() {
 
     let mut i = 0;
     loop {
-//        let frame_target = SystemTime::now() + Duration::from_millis(16);
+        let frame_target = SystemTime::now() + Duration::from_millis(16);
 
         let mut gb = sins.lock().unwrap();
         let vblank_before = gb.management_bits[IF] & 1;
