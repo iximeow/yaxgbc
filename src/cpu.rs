@@ -12,10 +12,10 @@ use crate::KEY1;
 
 #[derive(Clone, PartialEq)]
 pub(crate) struct Cpu {
-    af: [u8; 2],
-    bc: [u8; 2],
-    de: [u8; 2],
-    hl: [u8; 2],
+    pub af: [u8; 2],
+    pub bc: [u8; 2],
+    pub de: [u8; 2],
+    pub hl: [u8; 2],
     pub sp: u16,
     pub pc: u16,
     pub speed_mode: u8, // 0=Normal, 1=Double
