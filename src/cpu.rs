@@ -133,7 +133,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
         if key1 & 0b01 != 0 {
             self.cpu.speed_mode ^= 0b01;
             if self.cpu.verbose {
-                eprintln!("switching speed mode to {}", self.cpu.speed_mode);
+//                eprintln!("switching speed mode to {}", self.cpu.speed_mode);
             }
             self.storage.management_bits[KEY1] &= 0b0111_1111;
             self.storage.management_bits[KEY1] |= self.cpu.speed_mode << 7;
@@ -1041,7 +1041,7 @@ impl Cpu {
                 memory.management_bits[crate::IF as usize] ^= 1 << interrupt_nr;
 
                 let interrupt_addr = 0x40 + (8 * interrupt_nr) as u16;
-                eprintln!("interrupt fired {} to {:#04x}", interrupt_nr, interrupt_addr);
+//                eprintln!("interrupt fired {} to {:#04x}", interrupt_nr, interrupt_addr);
                 self.pc = interrupt_addr;
                 // and finally, enter the ISR with interrupts disabled again.
                 self.ime = false;
@@ -1219,7 +1219,6 @@ mod test {
             ];
 
             for (init, (res_a, res_f)) in test_pairs.iter() {
-                println!("rra of {:02x} should be {:02x}", init, res_a);
                 let mut cpu = Cpu::new();
                 cpu.af[1] = *init;
                 cpu.af[0] = 0x00;

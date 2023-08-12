@@ -108,6 +108,7 @@ fn main() {
     let cart = GBCCart::new(rom).unwrap();
 
     let bootrom = GBCCart::boot_rom(std::fs::read("cgb_boot.bin").unwrap(), &cart);
+//    let bootrom = GBCCart::boot_rom(std::fs::read("dmg_boot.bin").unwrap(), &cart);
 
     let mut gb = GBC::new(bootrom);
 
@@ -323,11 +324,11 @@ impl Apu {
                 self.channel_4_sound_length_enable = trigger;
             }
             NR50 => {
-                eprintln!("support master volume...");
+//                eprintln!("support master volume...");
                 self.nr50 = value;
             }
             NR51 => {
-                eprintln!("support sound panning...");
+//                eprintln!("support sound panning...");
                 self.nr51 = value;
             }
             NR52 => {
@@ -631,7 +632,7 @@ impl Lcd {
 
         if screen_time > Self::SCREEN_TIME {
             // ok, screen's done and we're resetting to mode 2 (exiting mode 1)
-            eprintln!("screen done");
+//            eprintln!("screen done");
             /*
             for i in 0..self.display.len() {
                 self.display[i] = 0;
@@ -1106,7 +1107,7 @@ impl MemoryBanks for MemoryMapping<'_> {
                 if value & 0xf8 != 0 {
                     eprintln!("bogus TAC value: {:02x}", value);
                 }
-                eprintln!("TAC set to {:02x}", value);
+//                eprintln!("TAC set to {:02x}", value);
                 self.management_bits[reg] = value;
             } else {
                 self.management_bits[reg] = value;
@@ -1404,6 +1405,8 @@ impl GBC {
             self.management_bits[IF] |= 0b00010;
         }
         self.management_bits[LY] = self.lcd.ly;
+        // for gameboy doctor
+//        self.management_bits[LY] = 0x90;
         self.apu.advance_clock(system_clocks);
 
         self.clock = new_clock;
@@ -1444,8 +1447,26 @@ impl GBC {
 
         let pc_before = self.cpu.pc;
         let clocks = self.cpu.step(&mut mem_map);
+        if !self.in_boot && false{
+            eprintln!(
+                "A:{:02X} F:{:02X} B:{:02X} C:{:02X} D:{:02X} E:{:02X} H:{:02X} L:{:02X} SP:{:04X} PC:{:04X} PCMEM:{:02X},{:02X},{:02X},{:02X}",
+                self.cpu.af[1],
+                self.cpu.af[0],
+                self.cpu.bc[1],
+                self.cpu.bc[0],
+                self.cpu.de[1],
+                self.cpu.de[0],
+                self.cpu.hl[1],
+                self.cpu.hl[0],
+                self.cpu.sp,
+                self.cpu.pc,
+                mem_map.load(self.cpu.pc),
+                mem_map.load(self.cpu.pc + 1),
+                mem_map.load(self.cpu.pc + 2),
+                mem_map.load(self.cpu.pc + 3),
+            );
+        }
         if mem_map.dma_requested {
-            eprintln!("DMA REQUESTED");
             let source = (mem_map.management_bits[HDMA1] as u16) << 8 | (mem_map.management_bits[HDMA2] as u16);
             let dest = (mem_map.management_bits[HDMA3] as u16) << 8 | (mem_map.management_bits[HDMA4] as u16);
             let size = mem_map.management_bits[HDMA5] as u16;
