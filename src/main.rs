@@ -582,9 +582,9 @@ impl Lcd {
                     assert!(self.background_pixels.len() == 160);
                     self.display[self.ly as usize * 160 + px] = self.background_pixels[px];
                     if let Some(sprite_px) = self.oam_pixels[px] {
-                        if sprite_px != 0 {
-                            self.display[self.ly as usize * 160 + px] = sprite_px;
-                        }
+//                        if sprite_px != 0 {
+                        self.display[self.ly as usize * 160 + px] = sprite_px;
+//                        }
                     }
                 }
                 self.background_pixels.clear();
