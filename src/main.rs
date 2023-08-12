@@ -40,7 +40,8 @@ fn main() {
     let sins_ref = Arc::clone(&sins);
 
     std::thread::spawn(|| {
-        frontend::tui::do_ui(sins_ref)
+//        frontend::tui::do_ui(sins_ref)
+        frontend::gui::do_ui(sins_ref)
     });
 
     let mut i = 0;
