@@ -384,9 +384,11 @@ struct Lcd {
     next_draw_time: u64,
     oam_scan_items: Vec<OamItem>,
     oam: [u8; 0xa0],
-    background_pixels: Vec<u8>,
-    oam_pixels: [Option<u8>; 160],
-    display: Box<[u8; 144 * 160]>
+    background_palettes_data: [u8; 0x40],
+    object_palettes_data: [u8; 0x40],
+    background_pixels: Vec<u32>,
+    oam_pixels: [Option<u32>; 160],
+    display: Box<[u32; 144 * 160]>
 }
 
 struct OamItem {
@@ -457,9 +459,11 @@ impl Lcd {
             next_draw_time: Self::SCREEN_TIME,
             oam_scan_items: Vec::new(),
             oam: [0u8; 0xa0],
+            background_palettes_data: [0u8; 0x40],
+            object_palettes_data: [0u8; 0x40],
             background_pixels: Vec::new(),
             oam_pixels: [None; 160],
-            display: Box::new([0u8; 144 * 160]),
+            display: Box::new([0u32; 144 * 160]),
         }
     }
 
@@ -695,7 +699,28 @@ impl Lcd {
                                 (((tile_row_hi >> (7 - x)) & 1) << 1) |
                                 (((tile_row_lo >> (7 - x)) & 1) << 0);
 
+                            let oam_palette = item.oam_attrs.bg_palette();
+
                             if px != 0 {
+//                                eprintln!("oam palette data: {:?}", self.object_palettes_data);
+                                let color_lo = self.object_palettes_data[
+                                    (oam_palette * 8 + px * 2) as usize
+                                ];
+                                let color_hi = self.object_palettes_data[
+                                    (oam_palette * 8 + px * 2 + 1) as usize
+                                ];
+                                let color = ((color_hi as u16) << 8) | (color_lo as u16);
+                                let red = color & 0x1f;
+                                let green = (color >> 5) & 0x1f;
+                                let blue = (color >> 10) & 0x1f;
+
+                                let red = red as u32 * 4;
+                                let green = green as u32 * 4;
+                                let blue = blue as u32 * 4;
+                                let px = red | (green << 8) | (blue << 16);
+
+//                                eprintln!("pixel: {:08x}", px);
+
                                 self.oam_pixels[x_addr as usize] = Some(px);
                             }
                         }
@@ -734,6 +759,25 @@ impl Lcd {
                             (((tile_row_hi >> (7 - x_idx)) & 1) << 1) |
                             (((tile_row_lo >> (7 - x_idx)) & 1) << 0);
 
+                        let bg_palette = attributes.bg_palette();
+
+                        let color_lo = self.background_palettes_data[
+                            (bg_palette * 8 + px * 2) as usize
+                        ];
+                        let color_hi = self.background_palettes_data[
+                            (bg_palette * 8 + px * 2 + 1) as usize
+                        ];
+                        let color = ((color_hi as u16) << 8) | (color_lo as u16);
+                        let red = color & 0x1f;
+                        let green = (color >> 5) & 0x1f;
+                        let blue = (color >> 10) & 0x1f;
+
+                        let red = red as u32 * 4;
+                        let green = green as u32 * 4;
+                        let blue = blue as u32 * 4;
+                        let px = red | (green << 8) | (blue << 16);
+
+                        // TODO: colorize background pixels as well
                         self.background_pixels.push(px);
                     }
                     assert_eq!(self.background_pixels.len(), 160);
@@ -1000,6 +1044,22 @@ impl MemoryBanks for MemoryMapping<'_> {
                 // read-only register: discard the write
             } else if reg == VBK {
                 self.management_bits[reg] = value & 0b01;
+            } else if reg == BGPI {
+                self.management_bits[reg] = value;
+            } else if reg == BGPD {
+                let idx = self.management_bits[BGPI] & 0x3f;
+                self.lcd.background_palettes_data[idx as usize] = value;
+                if self.management_bits[BGPI] & 0x80 != 0 {
+                    self.management_bits[BGPI] = 0x80 | ((idx + 1) & 0x3f);
+                }
+            } else if reg == OBPI {
+                self.management_bits[reg] = value;
+            } else if reg == OBPD {
+                let idx = self.management_bits[OBPI] & 0x3f;
+                self.lcd.object_palettes_data[idx as usize] = value;
+                if self.management_bits[OBPI] & 0x80 != 0 {
+                    self.management_bits[OBPI] = 0x80 | ((idx + 1) & 0x3f);
+                }
             } else if reg == SVBK {
                 self.management_bits[reg] = value & 0b111;
             } else if reg == IE {
@@ -1214,6 +1274,25 @@ const HDMA3: usize = 0x153;
 const HDMA4: usize = 0x154;
 // VRAM DMA length/mode/start
 const HDMA5: usize = 0x155;
+// Background palette index
+// Bit 7   - Auto Increment (0 = disabled, 1 = increment after write)
+// Bit 5-0 - Address ($00-$3F)
+const BGPI: usize = 0x168;
+// Background palette data
+// Bit 0-4   - Red (00-1f)
+// Bit 5-9   - Green (00-1f)
+// Bit 10-14 - Blue (00-1f)
+const BGPD: usize = 0x169;
+// Object palette index
+// Note that color 0 is always transparent.
+// Bit 7   - Auto Increment (0 = disabled, 1 = increment after write)
+// Bit 5-0 - Address ($00-$3F)
+const OBPI: usize = 0x16a;
+// Object palette data
+// Bit 0-4   - Red (00-1f)
+// Bit 5-9   - Green (00-1f)
+// Bit 10-14 - Blue (00-1f)
+const OBPD: usize = 0x16b;
 // SVBK: WRAM bank (CGB mode only)
 // In CGB Mode 32 KBytes internal RAM are available. This memory is divided into 8 banks of 4
 // KBytes each. Bank 0 is always available in memory at C000-CFFF, Bank 1-7 can be selected into
