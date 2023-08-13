@@ -1,7 +1,9 @@
 use std::fmt::Write;
 use std::sync::{Arc, Mutex};
 
-use crate::{STAT, SCX, SCY, IF, IE, GBC};
+use crate::{STAT, SCX, SCY, IF, IE, GBC, LCDC, LY, LYC};
+
+use std::time::SystemTime;
 
 use egui_miniquad;
 use egui;
@@ -14,7 +16,8 @@ struct GBCPainter {
     index_buffer: miniquad::Buffer,
     pipeline: Pipeline,
     gb_state: Arc<Mutex<GBC>>,
-    egui: egui_miniquad::EguiMq
+    egui: egui_miniquad::EguiMq,
+    fps_tracker: Vec<SystemTime>,
 }
 
 impl miniquad::EventHandler for GBCPainter {
@@ -29,15 +32,24 @@ impl miniquad::EventHandler for GBCPainter {
 
         let dpi_scale = ctx.dpi_scale();
 
+        let mut gb = self.gb_state.lock().unwrap();
+
         self.egui.run(ctx, |_miniquad_ctx, egui_ctx| {
             egui::Window::new("aaa").show(egui_ctx, |ui| {
                 if ui.button("quit").clicked() {
                     std::process::exit(0);
                 }
+                ui.label(format!("fps: {}", self.fps_tracker.len()));
+                ui.label(format!("scy: {}", gb.management_bits[SCY]));
+                ui.label(format!("scx: {}", gb.management_bits[SCX]));
+                ui.label(format!("ly: {}", gb.management_bits[LY]));
+                ui.label(format!("lyc: {}", gb.management_bits[LYC]));
+                ui.label(format!("lcdc: {}", gb.management_bits[LCDC]));
+                ui.label(format!("ie: {}", gb.management_bits[IE]));
+                ui.label(format!("if: {}", gb.management_bits[IF]));
+                ui.label(format!("pc: {:04x}", gb.cpu.pc));
             });
         });
-
-        let mut gb = self.gb_state.lock().unwrap();
 
         let mut pixels: Vec<u8> = Vec::new();
         for y in 0..SCREEN_HEIGHT {
@@ -76,6 +88,11 @@ impl miniquad::EventHandler for GBCPainter {
         self.egui.draw(ctx);
 
         ctx.commit_frame();
+        let now = SystemTime::now();
+        let tracker = std::mem::replace(&mut self.fps_tracker, Vec::new());
+        let tracker = tracker.into_iter().filter(|x| now.duration_since(*x).unwrap() < std::time::Duration::from_millis(1000)).collect();
+        self.fps_tracker = tracker;
+        self.fps_tracker.push(now);
     }
 
     fn mouse_motion_event(&mut self, _: &mut miniquad::Context, x: f32, y: f32) {
@@ -212,6 +229,7 @@ pub(crate) fn do_ui(gb_state: Arc<Mutex<GBC>>) {
             pipeline,
             gb_state,
             egui: egui_miniquad::EguiMq::new(ctx),
+            fps_tracker: Vec::new(),
         })
     });
     /*
