@@ -707,13 +707,13 @@ impl Lcd {
                             item.selected_line
                         };
                         let (tile_row_lo, tile_row_hi) = if self.lcdc & 0b100 == 0 || y_addr < 8 {
-                            let tile_line = item.selected_line;
+                            let tile_line = y_addr;
                             let oam_tile_data = &vram[oam_tile_addr..][..16];
                             let lo = oam_tile_data[tile_line as usize * 2];
                             let hi = oam_tile_data[tile_line as usize * 2 + 1];
                             (lo, hi)
                         } else {
-                            let tile_line = item.selected_line - 8;
+                            let tile_line = y_addr - 8;
                             let oam_tile_data = &vram[oam_tile_addr + 16..][..16];
                             let lo = oam_tile_data[tile_line as usize * 2];
                             let hi = oam_tile_data[tile_line as usize * 2 + 1];
@@ -752,7 +752,7 @@ impl Lcd {
 //                    eprintln!("tile base: {:04x}", tile_base);
 //                    eprintln!("tile y: {}.{}", self.ly / 8, self.ly % 8);
                     let background_y = scy.wrapping_add(self.ly);
-                    let background_x = scx + 0;
+                    let background_x = self.initial_scx + 0;
                     let tile_y = (background_y / 8) as u16;
                     let tile_yoffs = background_y as u16 % 8;
                     for i in 0..160u8 {
@@ -769,7 +769,7 @@ impl Lcd {
                         };
                         let tile_row_lo = tile_data[y_idx as usize * 2];
                         let tile_row_hi = tile_data[y_idx as usize * 2 + 1];
-                        let tile_xoffs = i % 8;
+                        let tile_xoffs = (i.wrapping_add(background_x)) % 8;
                         let x_idx = if attributes.flip_horizontal() {
                             7 - tile_xoffs
                         } else {
