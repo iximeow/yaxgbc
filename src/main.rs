@@ -962,10 +962,22 @@ impl MemoryBanks for MemoryMapping<'_> {
                     let reg = address as usize;
                     let v = if (reg >= APU_MIN_REG && reg <= APU_MAX_REG) || reg == PCM12 || reg == PCM34 {
                         self.apu.load(reg)
+                    } else if reg == JOYP {
+                        self.management_bits[reg]
                     } else if reg == VBK {
                         // "Reading from this register will return the number of the currently loaded VRAM
                         // bank in bit 0, and all other bits will be set to 1."
                         (self.management_bits[VBK] & 1) | 0b1111_1110
+                    } else if reg == BGPI {
+                        self.management_bits[reg]
+                    } else if reg == BGPD {
+                        let idx = self.management_bits[BGPI] & 0x3f;
+                        self.lcd.background_palettes_data[idx as usize]
+                    } else if reg == OBPI {
+                        self.management_bits[reg]
+                    } else if reg == OBPD {
+                        let idx = self.management_bits[OBPI] & 0x3f;
+                        self.lcd.object_palettes_data[idx as usize]
                     } else if reg == IF {
                         let v = self.management_bits[reg];
                         if self.verbose {
@@ -978,12 +990,55 @@ impl MemoryBanks for MemoryMapping<'_> {
                             eprintln!("getting IE=${:02x}", v);
                         }
                         v
+                    } else if reg == LY {
+                        self.management_bits[reg]
                     } else if reg == LCDC {
                         if self.verbose {
                             eprintln!("getting LCDC=${:02x}", self.lcd.lcdc);
                         }
                         self.lcd.lcdc
+                    } else if reg == BGP {
+                        self.management_bits[reg]
+                    } else if reg == OBP0 {
+                        self.management_bits[reg]
+                    } else if reg == OBP1 {
+                        self.management_bits[reg]
+                    } else if reg == BANK {
+                        self.management_bits[reg]
+                    } else if reg == IF {
+                        self.management_bits[reg]
+                    } else if reg == KEY0 {
+                        self.management_bits[reg]
+                    } else if reg == KEY1 {
+                        self.management_bits[reg]
+                    } else if reg == HDMA1 {
+                        0
+                    } else if reg == HDMA2 {
+                        0
+                    } else if reg == HDMA3 {
+                        0
+                    } else if reg == HDMA4 {
+                        0
+                    } else if reg == SVBK {
+                        self.management_bits[reg]
+                    } else if reg == SCY {
+                        self.management_bits[reg]
+                    } else if reg == SCX {
+                        self.management_bits[reg]
+                    } else if reg == LYC {
+                        self.management_bits[reg]
+                    } else if reg == DIV {
+                        self.management_bits[reg]
+                    } else if reg == TIMA {
+                        self.management_bits[reg]
+                    } else if reg == TMA {
+                        self.management_bits[reg]
+                    } else if reg == TAC {
+                        self.management_bits[reg]
+                    } else if reg == STAT {
+                        self.management_bits[reg]
                     } else {
+                        panic!("unhandled load {:04x}", reg);
                         let v = self.management_bits[reg];
                         if self.verbose {
                             eprintln!("get ${:04x} (=${:02x})", address, v);
@@ -1041,6 +1096,9 @@ impl MemoryBanks for MemoryMapping<'_> {
             let reg = addr as usize - 0xfe00;
             if (reg >= APU_MIN_REG && reg <= APU_MAX_REG) || reg == PCM12 || reg == PCM34 {
                 self.apu.store(reg, value);
+            } else if reg == JOYP {
+                self.management_bits[reg] &= 0b1100_1111;
+                self.management_bits[reg] |= (value & 0b0011_0000);
             } else if reg == KEY1 {
                 self.management_bits[reg] |= value & 0b1;
             } else if reg == LY {
@@ -1063,6 +1121,8 @@ impl MemoryBanks for MemoryMapping<'_> {
                 if self.management_bits[OBPI] & 0x80 != 0 {
                     self.management_bits[OBPI] = 0x80 | ((idx + 1) & 0x3f);
                 }
+            } else if reg == OPRI {
+                self.management_bits[reg] = value;
             } else if reg == SVBK {
                 self.management_bits[reg] = value & 0b111;
             } else if reg == IE {
@@ -1070,6 +1130,11 @@ impl MemoryBanks for MemoryMapping<'_> {
                     eprintln!("setting IE=${:02x}", value);
                 }
                 self.management_bits[reg] = value;
+            } else if reg == IF {
+                if self.verbose {
+                    eprintln!("setting IF=${:02x}", value);
+                }
+                self.management_bits[reg] = value & 0x1f;
             } else if reg == LCDC {
                 if self.verbose {
                     eprintln!("setting LCDC=${:02x}", value);
@@ -1081,6 +1146,19 @@ impl MemoryBanks for MemoryMapping<'_> {
                     let b = self.load(source + i);
                     self.store(0xfe00 + i, b);
                 }
+            } else if reg == JOYP {
+                self.management_bits[reg] &= 0b1100_1111;
+                self.management_bits[reg] |= (value & 0b0011_0000);
+            } else if reg == KEY0 {
+                self.management_bits[reg] = value;
+            } else if reg == HDMA1 {
+                self.management_bits[reg] = value;
+            } else if reg == HDMA2 {
+                self.management_bits[reg] = value;
+            } else if reg == HDMA3 {
+                self.management_bits[reg] = value;
+            } else if reg == HDMA4 {
+                self.management_bits[reg] = value;
             } else if reg == HDMA5 {
                 self.dma_requested = true;
                 self.management_bits[reg] = value;
@@ -1093,7 +1171,48 @@ impl MemoryBanks for MemoryMapping<'_> {
                 }
 //                eprintln!("TAC set to {:02x}", value);
                 self.management_bits[reg] = value;
+            } else if reg == BGP {
+                self.management_bits[reg] = value;
+            } else if reg == WX {
+                self.management_bits[reg] = value;
+            } else if reg == WY {
+                self.management_bits[reg] = value;
+            } else if reg == OBP0 {
+                self.management_bits[reg] = value & 0b1111_1100;
+            } else if reg == OBP1 {
+                self.management_bits[reg] = value & 0b1111_1100;
+            } else if reg == BANK {
+                self.management_bits[reg] = value;
+            } else if reg == STAT {
+                self.management_bits[reg] = value & 0b1111_0000;
+            } else if reg == LYC {
+                self.management_bits[reg] = value;
+            } else if reg == SCY {
+                self.management_bits[reg] = value;
+            } else if reg == SCX {
+                self.management_bits[reg] = value;
+            } else if reg == DIV {
+                self.management_bits[reg] = value;
+            } else if reg == TIMA {
+                self.management_bits[reg] = value;
+            } else if reg == TMA {
+                self.management_bits[reg] = value;
+            } else if reg == TAC {
+                self.management_bits[reg] = value;
+            } else if reg == SB {
+                if self.verbose {
+                    eprintln!("serial transfer unhandled");
+                }
+            } else if reg == SC {
+                if self.verbose {
+                    eprintln!("serial transfer unhandled");
+                }
+            } else if reg == RP {
+                if self.verbose {
+                    eprintln!("infrared port unhandled");
+                }
             } else {
+                        panic!("unhandled write {:04x}", reg);
                 self.management_bits[reg] = value;
             }
         } else if addr < 0xffff {
@@ -1122,6 +1241,10 @@ enum GBState {
 // Bit 1 - P11 Input: Left  or B        (0=Pressed) (Read Only)
 // Bit 0 - P10 Input: Right or A        (0=Pressed) (Read Only)
 const JOYP: usize = 0x100;
+// SB: Serial transfer data. the next  byte of serial dat that will go out.
+const SB: usize = 0x101;
+// SC: Serial transfer control
+const SC: usize = 0x102;
 // timer divider
 const DIV: usize = 0x104;
 // timer counter
@@ -1251,15 +1374,21 @@ const LYC: usize = 0x145;
 const DMA: usize = 0x146;
 // (DMG only) background palette
 const BGP: usize = 0x147;
+// OBP0, OBJ palette 0
+const OBP0: usize = 0x148;
+// OBP0, OBJ palette 1
+const OBP1: usize = 0x149;
 
-// Prepare speed switch (CGB mode only)
-// see gbadev pan docs
-const KEY1: usize = 0x14d;
 // upper/left positions of the window area
 // window Y
 const WY: usize = 0x14a;
 // window X
 const WX: usize = 0x14b;
+// KEY0. device mode indicator? written by boot rom?
+const KEY0: usize = 0x14c;
+// Prepare speed switch (CGB mode only)
+// see gbadev pan docs
+const KEY1: usize = 0x14d;
 // VBK: VRAM bank (CGB mode only)
 // This register can be written to change VRAM banks. Only bit 0 matters, all other bits are
 // ignored.
@@ -1277,6 +1406,8 @@ const HDMA3: usize = 0x153;
 const HDMA4: usize = 0x154;
 // VRAM DMA length/mode/start
 const HDMA5: usize = 0x155;
+// RP: Infrared communications port
+const RP: usize = 0x156;
 // Background palette index
 // Bit 7   - Auto Increment (0 = disabled, 1 = increment after write)
 // Bit 5-0 - Address ($00-$3F)
@@ -1296,6 +1427,9 @@ const OBPI: usize = 0x16a;
 // Bit 5-9   - Green (00-1f)
 // Bit 10-14 - Blue (00-1f)
 const OBPD: usize = 0x16b;
+// OPRI: Object priority mode
+// 0 for OAM priority, 1 for coordinate priority. set by CGB bios??
+const OPRI: usize = 0x16c;
 // SVBK: WRAM bank (CGB mode only)
 // In CGB Mode 32 KBytes internal RAM are available. This memory is divided into 8 banks of 4
 // KBytes each. Bank 0 is always available in memory at C000-CFFF, Bank 1-7 can be selected into
