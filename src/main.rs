@@ -45,13 +45,14 @@ fn main() {
     });
 
     let mut i = 0;
+    let mut clock_total = 0;
+    let mut frame_target = SystemTime::now() + Duration::from_millis(16);
     loop {
-        let frame_target = SystemTime::now() + Duration::from_millis(16);
 
         let mut gb = sins.lock().unwrap();
         let vblank_before = gb.management_bits[IF] & 1;
 
-        gb.run();
+        clock_total = gb.run();
 
         let vblank_after = gb.management_bits[IF] & 1;
         std::mem::drop(gb);
@@ -60,9 +61,18 @@ fn main() {
 
         let now = SystemTime::now();
 
-        if (vblank_fired && now < frame_target) || (i % 655360 == 655300) {
-            std::thread::sleep(frame_target.duration_since(now).unwrap());
-            i = 0;
+        if vblank_fired {
+            if now < frame_target {
+                let to_sleep = frame_target.duration_since(now).unwrap();
+//                eprintln!("beat frame time by {:0.4}ms", to_sleep.as_micros() as f64 / 1000.0);
+                std::thread::sleep(to_sleep);
+            } else {
+                let diff = frame_target.duration_since(now).unwrap();
+                eprintln!("LOST by {:0.4}ms", diff.as_micros() as f64 / 1000.0);
+            }
+        }
+        if now >= frame_target {
+            frame_target = SystemTime::now() + Duration::from_millis(16);
         }
 //        if i % 32 == 0 {
 //            std::thread::sleep(Duration::from_micros(1));
@@ -1413,7 +1423,7 @@ impl GBC {
         self.clock = new_clock;
     }
 
-    fn run(&mut self) {
+    fn run(&mut self) -> u64 {
         let mut mem_map = MemoryMapping {
             cart: if self.in_boot {
                 self.boot_rom.mapper.as_mut()
@@ -1532,6 +1542,8 @@ impl GBC {
         }
 
         self.advance_clock(clocks as u64);
+
+        clocks as u64
     }
 }
 
