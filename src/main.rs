@@ -478,6 +478,32 @@ impl Lcd {
         }
     }
 
+    fn px2rgb(palette_data: &[u8], palette_nr: u8, px: u8) -> u32 {
+        let color_lo = palette_data[
+            (palette_nr * 8 + px * 2) as usize
+        ];
+        let color_hi = palette_data[
+            (palette_nr * 8 + px * 2 + 1) as usize
+        ];
+        let color = ((color_hi as u16) << 8) | (color_lo as u16);
+        // lifted from SameBoy, i'm certain they've figured out color correction in a way i never
+        // will get to..
+        const CHANNEL_CORRECTION: [u8; 32] = [
+              0,   6,  12,  20,  28,  36,  45,  56,
+             66,  76,  88, 100, 113, 125, 137, 149,
+            161, 172, 182, 192, 202, 210, 218, 225,
+            232, 238, 243, 247, 250, 252, 254, 255
+        ];
+        let red = CHANNEL_CORRECTION[color as usize & 0x1f];
+        let green = CHANNEL_CORRECTION[(color >> 5) as usize & 0x1f];
+        let blue = CHANNEL_CORRECTION[(color >> 10) as usize & 0x1f];
+
+        let red = red as u32;
+        let green = green as u32;
+        let blue = blue as u32;
+        red | (green << 8) | (blue << 16)
+    }
+
     fn tile_lookup_by_nr<'a>(&self, vram: &'a [u8], tile_nr: u16) -> (&'a [u8], TileAttributes) {
         // look up the tile number in vram bank 0
         // then attrs for that tile number in vram bank 1
@@ -713,24 +739,7 @@ impl Lcd {
                             let oam_palette = item.oam_attrs.bg_palette();
 
                             if px != 0 {
-//                                eprintln!("oam palette data: {:?}", self.object_palettes_data);
-                                let color_lo = self.object_palettes_data[
-                                    (oam_palette * 8 + px * 2) as usize
-                                ];
-                                let color_hi = self.object_palettes_data[
-                                    (oam_palette * 8 + px * 2 + 1) as usize
-                                ];
-                                let color = ((color_hi as u16) << 8) | (color_lo as u16);
-                                let red = color & 0x1f;
-                                let green = (color >> 5) & 0x1f;
-                                let blue = (color >> 10) & 0x1f;
-
-                                let red = red as u32 * 4;
-                                let green = green as u32 * 4;
-                                let blue = blue as u32 * 4;
-                                let px = red | (green << 8) | (blue << 16);
-
-//                                eprintln!("pixel: {:08x}", px);
+                                let px = Self::px2rgb(&self.object_palettes_data, item.oam_attrs.bg_palette(), px);
 
                                 self.oam_pixels[x_addr as usize] = Some(px);
                             }
@@ -770,25 +779,8 @@ impl Lcd {
                             (((tile_row_hi >> (7 - x_idx)) & 1) << 1) |
                             (((tile_row_lo >> (7 - x_idx)) & 1) << 0);
 
-                        let bg_palette = attributes.bg_palette();
+                        let px = Self::px2rgb(&self.background_palettes_data, attributes.bg_palette(), px);
 
-                        let color_lo = self.background_palettes_data[
-                            (bg_palette * 8 + px * 2) as usize
-                        ];
-                        let color_hi = self.background_palettes_data[
-                            (bg_palette * 8 + px * 2 + 1) as usize
-                        ];
-                        let color = ((color_hi as u16) << 8) | (color_lo as u16);
-                        let red = color & 0x1f;
-                        let green = (color >> 5) & 0x1f;
-                        let blue = (color >> 10) & 0x1f;
-
-                        let red = red as u32 * 4;
-                        let green = green as u32 * 4;
-                        let blue = blue as u32 * 4;
-                        let px = red | (green << 8) | (blue << 16);
-
-                        // TODO: colorize background pixels as well
                         self.background_pixels.push(px);
                     }
                     assert_eq!(self.background_pixels.len(), 160);
