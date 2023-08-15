@@ -681,17 +681,29 @@ impl Lcd {
                             continue;
                         }
 
+                        // low bit of tile index is masked to 0 in 8x16 mode
+                        let tile_index = if self.lcdc & 0b100 == 0 {
+                            self.oam[object_addr + 2]
+                        } else {
+                            self.oam[object_addr + 2] & 0xfe
+                        };
+
                         self.oam_scan_items.push(OamItem {
                             selected_line: selected_line as u8,
                             x: x_end,
-                            tile_index: self.oam[object_addr + 2],
+                            tile_index,
                             oam_attrs: OamAttributes(self.oam[object_addr + 3]),
                         });
+                        if self.oam_scan_items.len() == 10 {
+                            break;
+                        }
                     }
+                    /*
                     self.oam_scan_items.sort_by_key(|item| item.x);
                     while self.oam_scan_items.len() > 10 {
                         self.oam_scan_items.pop();
                     }
+                    */
                     for item in self.oam_scan_items.iter() {
                         if item.x >= 168 {
                             continue;
