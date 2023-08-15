@@ -49,8 +49,32 @@ impl miniquad::EventHandler for GBCPainter {
                 ui.label(format!("if: {}", gb.management_bits[IF]));
                 ui.label(format!("pc: {:04x}", gb.cpu.pc));
             });
+            gb.clear_input();
+            if egui_ctx.input(|i| i.key_down(egui::Key::Q)) {
+                gb.do_input(crate::Input::Start);
+            }
+            if egui_ctx.input(|i| i.key_down(egui::Key::E)) {
+                gb.do_input(crate::Input::Select);
+            }
+            if egui_ctx.input(|i| i.key_down(egui::Key::Z)) {
+                gb.do_input(crate::Input::A);
+            }
+            if egui_ctx.input(|i| i.key_down(egui::Key::X)) {
+                gb.do_input(crate::Input::B);
+            }
+            if egui_ctx.input(|i| i.key_down(egui::Key::ArrowRight)) {
+                gb.do_input(crate::Input::Right);
+            }
+            if egui_ctx.input(|i| i.key_down(egui::Key::ArrowLeft)) {
+                gb.do_input(crate::Input::Left);
+            }
+            if egui_ctx.input(|i| i.key_down(egui::Key::ArrowUp)) {
+                gb.do_input(crate::Input::Up);
+            }
+            if egui_ctx.input(|i| i.key_down(egui::Key::ArrowDown)) {
+                gb.do_input(crate::Input::Down);
+            }
         });
-
         let mut pixels: Vec<u8> = Vec::new();
         for y in 0..SCREEN_HEIGHT {
             for x in 0..SCREEN_WIDTH {

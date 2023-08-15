@@ -864,6 +864,8 @@ struct GBC {
     div_apu: u64,
     next_div_tick: u64,
     next_div_apu_tick: u64,
+    input_actions: u8,
+    input_directions: u8,
 //    audio: Rc<GBCAudio>,
     verbose: bool,
 }
@@ -1146,9 +1148,6 @@ impl MemoryBanks for MemoryMapping<'_> {
                     let b = self.load(source + i);
                     self.store(0xfe00 + i, b);
                 }
-            } else if reg == JOYP {
-                self.management_bits[reg] &= 0b1100_1111;
-                self.management_bits[reg] |= (value & 0b0011_0000);
             } else if reg == KEY0 {
                 self.management_bits[reg] = value;
             } else if reg == HDMA1 {
@@ -1454,6 +1453,14 @@ fn dump_mem_region(mem_map: &dyn MemoryBanks, start: u16, words: u16, width: u16
     }
 }
 
+enum Input {
+    Start,
+    Select,
+    A,
+    B,
+    Left, Right, Up, Down,
+}
+
 impl GBC {
     fn new(boot_rom: GBCCart) -> Self {
         Self {
@@ -1470,7 +1477,43 @@ impl GBC {
             div_apu: 0,
             next_div_tick: 256,
             next_div_apu_tick: 256,
+            input_actions: 0,
+            input_directions: 0,
             verbose: false,
+        }
+    }
+
+    fn clear_input(&mut self) {
+        self.input_directions = 0;
+        self.input_actions = 0;
+    }
+
+    fn do_input(&mut self, input: Input) {
+        match input {
+            Input::Start => {
+                self.input_actions |= 0b0000_1000;
+            },
+            Input::Select => {
+                self.input_actions |= 0b0000_0100;
+            },
+            Input::B => {
+                self.input_actions |= 0b0000_0010;
+            },
+            Input::A => {
+                self.input_actions |= 0b0000_0001;
+            },
+            Input::Down => {
+                self.input_directions |= 0b0000_1000;
+            },
+            Input::Up => {
+                self.input_directions |= 0b0000_0100;
+            },
+            Input::Left => {
+                self.input_directions |= 0b0000_0010;
+            },
+            Input::Right => {
+                self.input_directions |= 0b0000_0001;
+            },
         }
     }
 
@@ -1550,6 +1593,15 @@ impl GBC {
     }
 
     fn run(&mut self) -> u64 {
+        let mut res = self.management_bits[JOYP] & 0b0011_0000;
+        if self.management_bits[JOYP] & 0b0001_0000 == 0 {
+            res |= self.input_directions ^ 0b0000_1111;
+        }
+        if self.management_bits[JOYP] & 0b0010_0000 == 0 {
+            res |= self.input_actions ^ 0b0000_1111;
+        }
+        self.management_bits[JOYP] = res;
+
         let mut mem_map = MemoryMapping {
             cart: if self.in_boot {
                 self.boot_rom.mapper.as_mut()
