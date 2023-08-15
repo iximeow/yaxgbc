@@ -59,25 +59,26 @@ fn main() {
 
         let vblank_fired = vblank_before == 0 && vblank_after == 1;
 
-        let now = SystemTime::now();
 
         if vblank_fired {
+        let now = SystemTime::now();
             if now < frame_target {
                 let to_sleep = frame_target.duration_since(now).unwrap();
-//                eprintln!("beat frame time by {:0.4}ms", to_sleep.as_micros() as f64 / 1000.0);
+                eprintln!("beat frame time by {:0.4}ms", to_sleep.as_micros() as f64 / 1000.0);
                 std::thread::sleep(to_sleep);
+                frame_target = now + to_sleep + Duration::from_millis(16);
             } else {
+                frame_target = now + Duration::from_millis(16);
+                /*
                 let diff = frame_target.duration_since(now).unwrap();
                 eprintln!("LOST by {:0.4}ms", diff.as_micros() as f64 / 1000.0);
+                */
             }
-        }
-        if now >= frame_target {
-            frame_target = SystemTime::now() + Duration::from_millis(16);
         }
 //        if i % 32 == 0 {
 //            std::thread::sleep(Duration::from_micros(1));
 //        }
-        i += 1;
+        // i += 1;
     }
 }
 
