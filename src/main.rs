@@ -720,7 +720,7 @@ impl Lcd {
                         } else {
                             item.selected_line
                         };
-                        let (tile_row_lo, tile_row_hi) = if self.lcdc & 0b100 == 0 || y_addr < 8 {
+                        let (tile_row_lo, tile_row_hi) = if y_addr < 8 {
                             let tile_line = y_addr;
                             let oam_tile_data = &vram[oam_tile_addr..][..16];
                             let lo = oam_tile_data[tile_line as usize * 2];
