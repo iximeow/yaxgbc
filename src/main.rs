@@ -455,7 +455,8 @@ impl TileAttributes {
 }
 
 impl Lcd {
-    const LINE_TIME: u64 = 376;
+    const OAM_SCAN: u64 = 80;
+    const LINE_TIME: u64 = 376 + Self::OAM_SCAN;
     const VBLANK_TIME: u64 = 4560; // vblank is 10 scan lines
     const SCREEN_TIME: u64 = 154 * Self::LINE_TIME;
 
