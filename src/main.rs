@@ -706,7 +706,7 @@ impl Lcd {
                         self.oam_scan_items.pop();
                     }
                     */
-                    for item in self.oam_scan_items.iter() {
+                    for item in self.oam_scan_items.iter().rev() {
                         if item.x >= 168 {
                             continue;
                         }
@@ -752,12 +752,12 @@ impl Lcd {
                                 (((tile_row_hi >> (7 - x)) & 1) << 1) |
                                 (((tile_row_lo >> (7 - x)) & 1) << 0);
 
-                            let oam_palette = item.oam_attrs.bg_palette();
-
                             if px != 0 {
                                 let px = Self::px2rgb(&self.object_palettes_data, item.oam_attrs.bg_palette(), px);
 
                                 self.oam_pixels[x_addr as usize] = Some(px);
+//                            } else {
+//                                self.oam_pixels[x_addr as usize] = Some(0xff0000);
                             }
                         }
                     }
@@ -997,7 +997,9 @@ impl MemoryBanks for MemoryMapping<'_> {
                     let v = if (reg >= APU_MIN_REG && reg <= APU_MAX_REG) || reg == PCM12 || reg == PCM34 {
                         self.apu.load(reg)
                     } else if reg == JOYP {
-                        self.management_bits[reg]
+                        let mut res = self.management_bits[reg];
+//                        eprintln!("reading joyp: {:08b}", res);
+                        res
                     } else if reg == VBK {
                         // "Reading from this register will return the number of the currently loaded VRAM
                         // bank in bit 0, and all other bits will be set to 1."
@@ -1585,8 +1587,10 @@ impl GBC {
         };
 
         if self.management_bits[TAC] & 0b0100 != 0 {
-            let tac_div = [1024, 16, 64, 256][self.management_bits[TAC] as usize & 0b11];
-            let tima_increment = (new_clock / tac_div) - (self.clock / tac_div);
+//            let tac_div = [1024, 16, 64, 256][self.management_bits[TAC] as usize & 0b11];
+//            let tima_increment = (new_clock / tac_div) - (self.clock / tac_div);
+            let tac_scale = [10, 4, 6, 8][self.management_bits[TAC] as usize & 0b11];
+            let tima_increment = (new_clock >> tac_scale) - (self.clock >> tac_scale);
 
             let tima = self.management_bits[TIMA] as u16;
             let new_tima = tima + tima_increment as u16;

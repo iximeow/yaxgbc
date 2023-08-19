@@ -180,6 +180,9 @@ pub(crate) fn do_ui(gb_state: Arc<Mutex<GBC>>) {
 //        high_dpi: true,
         window_height: SCREEN_HEIGHT as i32 * 6,
         window_width: SCREEN_WIDTH as i32 * 6,
+        platform: miniquad::conf::Platform {
+            ..Default::default()
+        },
         ..Default::default()
     };
 
