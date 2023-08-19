@@ -612,6 +612,8 @@ impl Lcd {
 
         let mut vblank_hit = false;
 
+        let mut should_interrupt = false;
+
         if line_time > Self::LINE_TIME {
             // ok, line's done and we're resetting to mode 2 (exiting mode 0)
             // eprintln!("line {} done", self.ly);
@@ -631,17 +633,17 @@ impl Lcd {
 
             self.current_line_start += (line_time / Self::LINE_TIME) * Self::LINE_TIME;
             self.ly += 1;
+
+            // fire LYC=LY
+            if self.ly == lyc && (lcd_stat & 0b0100_0000 != 0) {
+//                eprintln!("firing lyc=ly at ly={}", self.ly);
+                should_interrupt = true;
+            }
+
             if self.ly == 144 {
                 vblank_hit = true;
             }
-            line_time -= line_time % Self::LINE_TIME;
-        }
-
-        let mut should_interrupt = false;
-
-        // fire LYC=LY
-        if self.ly == lyc && (lcd_stat & 0b0100_0000 != 0) {
-            should_interrupt = true;
+            line_time -= Self::LINE_TIME;
         }
 
         if self.ly >= 144 {
