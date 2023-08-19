@@ -657,7 +657,7 @@ impl Lcd {
         } else {
             if line_time < 80 {
                 let prior_mode = self.mode;
-                if self.mode != 2 && (lcd_stat & 0b0100_0000 != 0) {
+                if self.mode != 2 && (lcd_stat & 0b0010_0000 != 0) {
                     should_interrupt = true;
                 }
                 self.mode = 2;
@@ -795,9 +795,25 @@ impl Lcd {
                             (((tile_row_hi >> (7 - x_idx)) & 1) << 1) |
                             (((tile_row_lo >> (7 - x_idx)) & 1) << 0);
 
+                        /*
+                        if self.ly > 42 && self.ly < 49 {
+                            eprintln!("px in = {}", px);
+                        }
+                        */
                         let px = Self::px2rgb(&self.background_palettes_data, attributes.bg_palette(), px);
+                        /*
+                        if self.ly > 42 && self.ly < 49 {
+                            eprintln!("px out = {} via palette {}, tile x,y=({}, {})", px, attributes.bg_palette(), tile_x, tile_y);
+                        }
+                        */
 
                         self.background_pixels.push(px);
+                    }
+                    if self.background_pixels.iter().all(|x| x == &0x00_ff_ff_ff) {
+//                        eprintln!("clear line... {}", self.ly);
+                        self.background_pixels[0] = 0x00_ff_00_00;
+                    } else {
+//                        eprintln!("normal line");
                     }
                     assert_eq!(self.background_pixels.len(), 160);
                 }
@@ -805,7 +821,7 @@ impl Lcd {
                 // the exact timing here depends on how many OBJs were found. 168 is a minimum.
                 self.mode = 3;
             } else if line_time < 80 + 168 + 208 {
-                if self.mode != 0 && (lcd_stat & 0b0010_0000 != 0) {
+                if self.mode != 0 && (lcd_stat & 0b0000_1000 != 0) {
                     should_interrupt = true;
                 }
                 self.mode = 0;
