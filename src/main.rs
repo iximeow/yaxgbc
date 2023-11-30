@@ -46,6 +46,7 @@ fn main() {
 
     let mut i = 0;
     let mut clock_total = 0;
+    const CLOCKS_PER_FRAME: u64 = 4_190_000 / 60;
     let mut frame_target = SystemTime::now() + Duration::from_millis(16);
     loop {
 
@@ -391,6 +392,7 @@ struct Lcd {
     lcd_clock: u64,
     current_line_start: u64,
     current_draw_start: u64,
+    initial_scx: u8,
     // when, in dots, we'll be at the next line. this is the end of the current line's HBlank.
     next_line: u64,
     next_draw_time: u64,
@@ -398,9 +400,17 @@ struct Lcd {
     oam: [u8; 0xa0],
     background_palettes_data: [u8; 0x40],
     object_palettes_data: [u8; 0x40],
-    background_pixels: Vec<u32>,
-    oam_pixels: [Option<u32>; 160],
+    background_pixels: Vec<Pixel>,
+    oam_pixels: [Pixel; 160],
     display: Box<[u32; 144 * 160]>
+}
+
+#[derive(Copy, Clone, Default, PartialEq, Debug)]
+struct Pixel {
+    rgb: u32,
+    pixel: u8,
+    bg_priority: bool,
+    priority: bool,
 }
 
 struct OamItem {
@@ -413,6 +423,10 @@ struct OamItem {
 struct OamAttributes(u8);
 
 impl OamAttributes {
+    fn bg_priority(&self) -> bool {
+        (self.0 & 0b1000_0000) != 0
+    }
+
     fn flip_vertical(&self) -> bool {
         (self.0 & 0b0100_0000) != 0
     }
@@ -468,6 +482,7 @@ impl Lcd {
             lcd_clock: 0,
             current_line_start: 0,
             current_draw_start: 0,
+            initial_scx: 0,
             next_line: Self::LINE_TIME,
             next_draw_time: Self::SCREEN_TIME,
             oam_scan_items: Vec::new(),
@@ -475,7 +490,7 @@ impl Lcd {
             background_palettes_data: [0u8; 0x40],
             object_palettes_data: [0u8; 0x40],
             background_pixels: Vec::new(),
-            oam_pixels: [None; 160],
+            oam_pixels: [Pixel::default(); 160],
             display: Box::new([0u32; 144 * 160]),
         }
     }
@@ -616,19 +631,17 @@ impl Lcd {
 
         if line_time > Self::LINE_TIME {
             // ok, line's done and we're resetting to mode 2 (exiting mode 0)
-            // eprintln!("line {} done", self.ly);
+//            eprintln!("line {} done", self.ly);
             if self.ly < 144 {
                 for px in 0..self.background_pixels.len() {
                     assert!(self.background_pixels.len() == 160);
-                    self.display[self.ly as usize * 160 + px] = self.background_pixels[px];
-                    if let Some(sprite_px) = self.oam_pixels[px] {
-//                        if sprite_px != 0 {
-                        self.display[self.ly as usize * 160 + px] = sprite_px;
-//                        }
+                    self.display[self.ly as usize * 160 + px] = self.background_pixels[px].rgb;
+                    if self.oam_pixels[px].pixel != 0 && (!(self.oam_pixels[px].bg_priority && self.background_pixels[px].pixel != 0)) {
+                        self.display[self.ly as usize * 160 + px] = self.oam_pixels[px].rgb;
                     }
                 }
                 self.background_pixels.clear();
-                self.oam_pixels = [None; 160];
+                self.oam_pixels = [Pixel::default(); 160];
             }
 
             self.current_line_start += (line_time / Self::LINE_TIME) * Self::LINE_TIME;
@@ -663,15 +676,18 @@ impl Lcd {
                 self.mode = 2;
 
                 if prior_mode != self.mode {
+                    self.initial_scx = scx;
                     // do a full OAM scan up front. there might be benefits to driving the OAM reads in
                     // a more cycle-accurate manner, but i'm skimping on that for now.
                     self.oam_scan_items.clear();
                     for i in 0..40 {
+                        if self.lcdc & 0b010 == 0 {
+                            break;
+                        }
                         let object_addr = 4 * i;
                         let y_end = self.oam[object_addr + 0];
                         let x_end = self.oam[object_addr + 1];
 
-                        // TODO: respect LCDC.2 for double-height sprites
                         let sprite_height = if self.lcdc & 0b100 == 0 {
                             8
                         } else {
@@ -706,6 +722,15 @@ impl Lcd {
                         self.oam_scan_items.pop();
                     }
                     */
+                }
+            } else if line_time < 80 + 168 {
+                // the exact timing here depends on how many OBJs were found. 168 is a minimum.
+                let prior_mode = self.mode;
+                self.mode = 3;
+
+                // we just entered mode 3, draw the pixels. again, this should be made pixel-accurate in
+                // the future
+                if self.mode != prior_mode {
                     for item in self.oam_scan_items.iter().rev() {
                         if item.x >= 168 {
                             continue;
@@ -753,9 +778,28 @@ impl Lcd {
                                 (((tile_row_lo >> (7 - x)) & 1) << 0);
 
                             if px != 0 {
-                                let px = Self::px2rgb(&self.object_palettes_data, item.oam_attrs.bg_palette(), px);
+                                let rgb = Self::px2rgb(&self.object_palettes_data, item.oam_attrs.bg_palette(), px);
+                                /*
+                                const COLORS: &[u32] = &[
+                                    0x0000ff, 0x000080, 0x000040,
+                                    0x00ff00, 0x008000, 0x004000,
+                                    0xff0000, 0x800000, 0x400000,
+                                    0x00ffff, 0x00ff80, 0x00ff40,
+                                    0x0080ff, 0x008080, 0x008040,
+                                    0x0040ff, 0x004080, 0x004040,
+                                    0xff00ff, 0xff0080, 0xff0040,
+                                    0x8000ff, 0x800080, 0x800040,
+                                    0x4000ff, 0x400080, 0x400040,
+                                ];
+                                let px = COLORS[(px as usize) % COLORS.len()].wrapping_mul(item.x as u32 + y_addr as u32);
+                                */
 
-                                self.oam_pixels[x_addr as usize] = Some(px);
+                                self.oam_pixels[x_addr as usize] = Pixel {
+                                    pixel: px,
+                                    rgb,
+                                    bg_priority: item.oam_attrs.bg_priority(),
+                                    priority: false,
+                                };
 //                            } else {
 //                                self.oam_pixels[x_addr as usize] = Some(0xff0000);
                             }
@@ -768,7 +812,7 @@ impl Lcd {
 //                    eprintln!("tile base: {:04x}", tile_base);
 //                    eprintln!("tile y: {}.{}", self.ly / 8, self.ly % 8);
                     let background_y = scy.wrapping_add(self.ly);
-                    let background_x = self.initial_scx + 0;
+                    let background_x = scx + 0;
                     let tile_y = (background_y / 8) as u16;
                     let tile_yoffs = background_y as u16 % 8;
                     for i in 0..160u8 {
@@ -800,26 +844,35 @@ impl Lcd {
                             eprintln!("px in = {}", px);
                         }
                         */
-                        let px = Self::px2rgb(&self.background_palettes_data, attributes.bg_palette(), px);
+                        let rgb = Self::px2rgb(&self.background_palettes_data, attributes.bg_palette(), px);
                         /*
                         if self.ly > 42 && self.ly < 49 {
                             eprintln!("px out = {} via palette {}, tile x,y=({}, {})", px, attributes.bg_palette(), tile_x, tile_y);
                         }
                         */
 
+                        let px = Pixel {
+                            pixel: px,
+                            rgb,
+                            bg_priority: false,
+                            priority: true,
+                        };
+
                         self.background_pixels.push(px);
                     }
-                    if self.background_pixels.iter().all(|x| x == &0x00_ff_ff_ff) {
+                    if self.background_pixels.iter().all(|px| px.pixel == 0) {
 //                        eprintln!("clear line... {}", self.ly);
-                        self.background_pixels[0] = 0x00_ff_00_00;
+                        self.background_pixels[0] = Pixel {
+                            pixel: 1,
+                            rgb: 0x00_ff_00_00,
+                            bg_priority: true,
+                            priority: true,
+                        };
                     } else {
 //                        eprintln!("normal line");
                     }
                     assert_eq!(self.background_pixels.len(), 160);
                 }
-            } else if line_time < 80 + 168 {
-                // the exact timing here depends on how many OBJs were found. 168 is a minimum.
-                self.mode = 3;
             } else if line_time < 80 + 168 + 208 {
                 if self.mode != 0 && (lcd_stat & 0b0000_1000 != 0) {
                     should_interrupt = true;
@@ -1620,6 +1673,8 @@ impl GBC {
         if stat_int {
             self.management_bits[IF] |= 0b00010;
         }
+        self.management_bits[STAT] &= 0b1111_1100;
+        self.management_bits[STAT] |= self.lcd.mode;
         self.management_bits[LY] = self.lcd.ly;
         // for gameboy doctor
 //        self.management_bits[LY] = 0x90;
