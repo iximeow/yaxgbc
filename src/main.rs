@@ -1842,6 +1842,7 @@ impl MemoryBankControllerType {
                     ram_enable: 0u8,
                     rom_bank: 0u8,
                     ram_bank: 0u8,
+                    bank_mode_select: 0u8,
                     rom: rom_image,
                     ram: ram,
                 })
@@ -2020,6 +2021,7 @@ struct MBC1 {
     ram_enable: u8,
     rom_bank: u8,
     ram_bank: u8,
+    bank_mode_select: u8,
     rom: Box<[u8]>,
     ram: Box<[u8]>,
 }
@@ -2042,21 +2044,40 @@ impl MemoryBanks for MBC1 {
 
     fn translate_address(&self, addr: u16) -> MemoryAddress {
         if addr <= 0x3fff {
-            MemoryAddress::rom(addr as u32)
+            if self.bank_mode_select == 0 {
+                MemoryAddress::rom(addr as u32)
+            } else {
+                let bank = if self.rom.len() < 512 * 1024 {
+                    0
+                } else {
+                    self.ram_bank as usize * 16
+                };
+                let addr = addr as usize + 0x4000 * bank;
+                MemoryAddress::rom(addr as u32)
+            }
         } else if addr < 0x7fff {
-            let bank = self.rom_bank as usize;
-            let bank = if bank == 0 {
+            let bank_low = if self.rom_bank == 0 {
                 1
             } else {
-                bank
+                self.rom_bank as usize
             };
+            let bank_high = if self.rom.len() < 512 * 1024 {
+                0
+            } else {
+                self.ram_bank as usize * 16
+            };
+            let bank = bank_low + bank_high;
             let addr = addr as usize - 0x4000 + bank * 0x4000;
             MemoryAddress::rom(addr as u32)
         } else if addr < 0xa000 {
             eprintln!("bad cart access at {:#04x}", addr);
             MemoryAddress::rom(0)
         } else if addr < 0xc000 {
-            let bank = self.ram_bank as usize;
+            let bank = if self.ram.len() < 8 * 1024 {
+                0
+            } else {
+                self.ram_bank as usize
+            };
             let addr = addr as usize - 0xa000 + bank * 0x2000;
             MemoryAddress::ram(addr as u32)
         } else {
@@ -2071,7 +2092,8 @@ impl MemoryBanks for MBC1 {
                 0 | 1 => { self.ram_enable = value; },
                 2 | 3 => { self.rom_bank = value & 0b000_11111; },
                 4 | 5 => { self.ram_bank = value; },
-                _ => { panic!("mbc1 bank mode select") },
+                6 | 7 => { self.bank_mode_select = value & 1; },
+                _ => { panic!("mbc1 bad mapper register bits ({:04b})", reg_bits) },
             }
         } else if addr < 0xc000 {
             if self.ram_enable & 0x0f != 0x0a {
