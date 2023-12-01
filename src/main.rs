@@ -1297,6 +1297,9 @@ impl MemoryBanks for MemoryMapping<'_> {
                 if self.verbose {
                     eprintln!("infrared port unhandled");
                 }
+            } else if reg == 0x17f || reg == 0x17e {
+                // super mario world 6 golden coins writes to ff7f and ff7e. bug in the game?
+                // anyway, writes are discarded.
             } else {
                         panic!("unhandled write {:04x}", reg);
                 self.management_bits[reg] = value;
