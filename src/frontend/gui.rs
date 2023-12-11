@@ -40,6 +40,7 @@ impl miniquad::EventHandler for GBCPainter {
                     std::process::exit(0);
                 }
                 ui.label(format!("fps: {}", self.fps_tracker.len()));
+                ui.label(format!("vblank/s(?): {}", gb.frame_times.len()));
                 ui.label(format!("scy: {}", gb.management_bits[SCY]));
                 ui.label(format!("scx: {}", gb.management_bits[SCX]));
                 ui.label(format!("ly: {}", gb.management_bits[LY]));

@@ -48,6 +48,7 @@ fn main() {
     let mut clock_total = 0;
     const CLOCKS_PER_FRAME: u64 = 4_190_000 / 60;
     let mut frame_target = SystemTime::now() + Duration::from_millis(16);
+    let mut last_overshoot = 0;
     loop {
 
         let mut gb = sins.lock().unwrap();
@@ -56,30 +57,86 @@ fn main() {
         clock_total = gb.run();
 
         let vblank_after = gb.management_bits[IF] & 1;
-        std::mem::drop(gb);
 
         let vblank_fired = vblank_before == 0 && vblank_after == 1;
 
 
+        // this entire block comes from... thinking really hard, and still not really understanding
+        // it all the way.
+        //
+        // the idea i was trying to capture is the result of a few observations.
+        // * on linux, having frame targets computed as "now + 16ms" appeared to have the emulator
+        // get a little slwoer each frame - beating the target by 16ms, then 15.8ms, then 15.6,
+        // 15.4, ... until some frame loses w.r.t frame target and resets to 16ms. this was almost
+        // certainly sleep() sleeping more than the requested time, and that overshoot turning
+        // into a growing error over time.
+        // * on windows, this same thing, but several milliseconds of error every frame.
+        //
+        // so, now, this tries to do thee things.
+        // * have next frame target be constantly computed with respect to the current frame time, not
+        // from some independently-managed timer.
+        // * sleep just enough to produce one frame every 16.666ms (e.g. 60fps)
+        // * correctly account for sleep() sleeping too much (or too little)
+        //
+        // the way this is handled... is best shown in a diagram. the simplest case of "the first
+        // frame" is ignored here, and the Y-axis is time:
+        //
+        //  990.0ms | frame N vblank
+        //  990.1ms | sleep until frame N target (9.9ms)
+        // 1000.0ms |-------- frame N target
+        // ...
+        // 1004.0ms | wake from frame N sleep (actual sleep: 13.9ms)
+        // 1004.1ms | work work work
+        // ...
+        // 1006.0ms | frame N+1 vblank
+        // 1006.3ms | sleep until frame N target (9.7ms)
+        // ...
+        // 1016.0ms |-------- frame N+1 target
+        // ...
+        // 1021.1ms | wake from frame N sleep (actual sleep: 14.7ms)
+        // 1021.1ms | work work work
+        //
+        // which is to say, count both time-to-frame and time-sleep-overshot to calculate future
+        // frame times, and subtract overshoot time from the time we permit the current frame to be
+        // computed.
+        //
+        // if we consistently run out of time for the current frame, probably stop trying to sleep
+        // at all. on some platforms that seems to have a minimum of a few milliseconds delay, and
+        // that might be make-or-break...???
         if vblank_fired {
-        let now = SystemTime::now();
+            let now = SystemTime::now();
             if now < frame_target {
-                let to_sleep = frame_target.duration_since(now).unwrap();
-                eprintln!("beat frame time by {:0.4}ms", to_sleep.as_micros() as f64 / 1000.0);
-                std::thread::sleep(to_sleep);
-                frame_target = now + to_sleep + Duration::from_millis(16);
+                let times = std::mem::replace(&mut gb.frame_times, Vec::new());
+                let times = times.into_iter().filter(|x| {
+                    now.duration_since(*x).unwrap() < std::time::Duration::from_millis(1000)
+                }).collect();
+                gb.frame_times = times;
+                gb.frame_times.push(now);
+
+                let micros_to_sleep = frame_target.duration_since(now).unwrap().as_micros();
+                if last_overshoot > micros_to_sleep {
+                    last_overshoot = 0;
+                } else {
+                    let to_sleep = std::time::Duration::from_micros((micros_to_sleep - last_overshoot) as u64);
+                    eprintln!("beat frame time by {:0.4}ms", to_sleep.as_micros() as f64 / 1000.0);
+                    std::mem::drop(gb);
+
+                    std::thread::sleep(to_sleep);
+                    let slept = now.elapsed().unwrap();
+                    if slept > to_sleep {
+                        let overshoot = slept.as_micros() - to_sleep.as_micros();
+                        eprintln!("overshot by {}micros, frame budget is {}", overshoot, 16666 - overshoot);
+                        last_overshoot = overshoot;
+                    } else {
+                        last_overshoot = 0;
+                    }
+                }
+                frame_target = SystemTime::now() + (Duration::from_micros(16666 - last_overshoot as u64));
             } else {
+                eprintln!("yike, by {} micros", now.duration_since(frame_target).unwrap().as_micros());
                 frame_target = now + Duration::from_millis(16);
-                /*
-                let diff = frame_target.duration_since(now).unwrap();
-                eprintln!("LOST by {:0.4}ms", diff.as_micros() as f64 / 1000.0);
-                */
             }
         }
-//        if i % 32 == 0 {
-//            std::thread::sleep(Duration::from_micros(1));
-//        }
-        // i += 1;
     }
 }
 
@@ -936,6 +993,7 @@ struct GBCScreen {
 }
 
 struct GBC {
+    frame_times: Vec<SystemTime>,
     cpu: Cpu,
     lcd: Lcd,
     apu: Apu,
@@ -1554,6 +1612,7 @@ enum Input {
 impl GBC {
     fn new(boot_rom: GBCCart) -> Self {
         Self {
+            frame_times: Vec::new(),
             cpu: Cpu::new(),
             lcd: Lcd::new(),
             apu: Apu::new(),
