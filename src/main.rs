@@ -666,6 +666,8 @@ impl Lcd {
         }
         let mut screen_time = self.lcd_clock - self.current_draw_start;
 
+        let mut should_interrupt = false;
+
         if screen_time > Self::SCREEN_TIME {
             // ok, screen's done and we're resetting to mode 2 (exiting mode 1)
 //            eprintln!("screen done");
@@ -676,6 +678,12 @@ impl Lcd {
             */
             self.current_draw_start += (screen_time / Self::SCREEN_TIME) * Self::SCREEN_TIME;
             self.ly = 0;
+            // fire LYC=LY
+            if self.ly == lyc && (lcd_stat & 0b0100_0000 != 0) {
+//                eprintln!("firing lyc=ly at ly={}", self.ly);
+                should_interrupt = true;
+            }
+
             self.current_line_start = self.current_draw_start;
             screen_time -= screen_time % Self::SCREEN_TIME;
         }
@@ -683,8 +691,6 @@ impl Lcd {
         let mut line_time = self.lcd_clock - self.current_line_start;
 
         let mut vblank_hit = false;
-
-        let mut should_interrupt = false;
 
         if line_time > Self::LINE_TIME {
             // ok, line's done and we're resetting to mode 2 (exiting mode 0)
