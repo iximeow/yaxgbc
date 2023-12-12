@@ -72,7 +72,7 @@ fn main() {
         // into a growing error over time.
         // * on windows, this same thing, but several milliseconds of error every frame.
         //
-        // so, now, this tries to do thee things.
+        // so, now, this tries to do three things.
         // * have next frame target be constantly computed with respect to the current frame time, not
         // from some independently-managed timer.
         // * sleep just enough to produce one frame every 16.666ms (e.g. 60fps)
