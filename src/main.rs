@@ -14,6 +14,7 @@ use crate::cpu::Cpu;
 use crate::cpu::DecorateExt;
 
 mod frontend;
+mod timer;
 
 #[derive(Parser)]
 #[clap(about, version, author)]
@@ -49,6 +50,22 @@ fn main() {
 //        frontend::tui::do_ui(sins_ref)
         frontend::gui::do_ui(sins_ref)
     });
+
+    /*
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    std::thread::spawn(|| {
+        timer::run(tx)
+    });
+    */
+    /// safety: timeBeginPeriod can't actually cause unsoundness.
+    #[cfg(target_os="windows")]
+    {
+        let time_res = unsafe { windows::Win32::Media::timeBeginPeriod(1) };
+        if time_res != windows::Win32::Media::TIMERR_NOERROR {
+            panic!("failed to set timeBeginPeriod: {}", time_res);
+        }
+    }
 
     let mut i = 0;
     let mut clock_total = 0;
@@ -110,6 +127,18 @@ fn main() {
         // at all. on some platforms that seems to have a minimum of a few milliseconds delay, and
         // that might be make-or-break...???
         if vblank_fired {
+            /*
+            let now = SystemTime::now();
+            let times = std::mem::replace(&mut gb.frame_times, Vec::new());
+            let times = times.into_iter().filter(|x| {
+                now.duration_since(*x).unwrap() < std::time::Duration::from_millis(1000)
+            }).collect();
+            gb.frame_times = times;
+            gb.frame_times.push(now);
+            std::mem::drop(gb);
+
+            rx.recv().expect("TODO: sender is still running");
+            */
             let now = SystemTime::now();
             if now < frame_target {
                 let times = std::mem::replace(&mut gb.frame_times, Vec::new());
@@ -119,25 +148,45 @@ fn main() {
                 gb.frame_times = times;
                 gb.frame_times.push(now);
 
+                let apu_queue_depth = gb.apu.audio_buffer_depth;
+
                 let micros_to_sleep = frame_target.duration_since(now).unwrap().as_micros();
                 if last_overshoot > micros_to_sleep {
+                    eprintln!("overshoot too much? last sleep overslept by {}, this frame has {} to waste", last_overshoot, micros_to_sleep);
                     last_overshoot = 0;
                 } else {
                     let to_sleep = std::time::Duration::from_micros((micros_to_sleep - last_overshoot) as u64);
-//                    eprintln!("beat frame time by {:0.4}ms", to_sleep.as_micros() as f64 / 1000.0);
+                    eprintln!("beat frame time by {:0.4}ms", to_sleep.as_micros() as f64 / 1000.0);
                     std::mem::drop(gb);
 
                     std::thread::sleep(to_sleep);
                     let slept = now.elapsed().unwrap();
                     if slept > to_sleep {
                         let overshoot = slept.as_micros() - to_sleep.as_micros();
-//                        eprintln!("overshot by {}micros, frame budget is {}", overshoot, 16666 - overshoot);
+                        eprintln!("overshot by {}micros, frame budget is {}", overshoot, 16666 - overshoot);
                         last_overshoot = overshoot;
                     } else {
                         last_overshoot = 0;
                     }
                 }
-                frame_target = SystemTime::now() + (Duration::from_micros(16666 - last_overshoot as u64));
+                // try mixing some extra sleep in if we're behind on audio playback. the idea here
+                // is to mix in a little sleep if we're a little behind, a lot of sleep if we're a
+                // lot behind, but never too much to cause obvious visible delay.
+                //
+                // all in all, we're relying on accurate audio playback to calibrate times within a
+                // few milliseconds...
+                //
+                // audio buffers are 256 samples, so each buffer we're behind represents 0.58ms of
+                // playback we're behind on. call <5ms delay fine. at 100ms of delay, though, we'll
+                // add a full two milliseconds to every frame to try catching up.
+                let extra_sleep_micros = if apu_queue_depth < 10 {
+                    0
+                } else if apu_queue_depth < 300 {
+                    (1500 * 300) / apu_queue_depth
+                } else {
+                    2000
+                };
+                frame_target = SystemTime::now() + (Duration::from_micros(16666 - last_overshoot as u64 + extra_sleep_micros));
             } else {
                 eprintln!("yike, by {} micros", now.duration_since(frame_target).unwrap().as_micros());
                 frame_target = now + Duration::from_millis(16);
@@ -154,6 +203,10 @@ struct Apu {
     apu_active: bool,
     rendered_sound: Vec<f32>,
     clocks_since_length_tick: u64,
+    /// the number of 256-sample buffers enqueued for playing, last we checked. the deeper this
+    /// buffer, the more the cpu is running ahead of real time. if this buffer fully drains,
+    /// though, we're running too slow and audio will be choppy.
+    audio_buffer_depth: u64,
     /// the number of clocks since the last sample that was rendered out.
     ///
     /// at a clock speed of 4.19mhz and a 44100hz output, that leaves about 95 clocks per sample.
@@ -461,6 +514,7 @@ const WAVE_RAM_START: usize = 0x130;
             rendered_sound: Vec::new(),
             sample_clock: 0,
             clocks_since_length_tick: 0,
+            audio_buffer_depth: 0,
             apu_active: false,
             nr50: 0,
             nr51: 0,
@@ -874,6 +928,7 @@ const WAVE_RAM_START: usize = 0x130;
         if self.rendered_sound.len() >= 256 {
             let rendered = std::mem::replace(&mut self.rendered_sound, Vec::new());
             if let Some(sink) = sink {
+                self.audio_buffer_depth = sink.len() as u64;
                 if sink.len() == 0 {
                     eprintln!("sink was drained? sorry, audio pop :(");
                 } else {
