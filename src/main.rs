@@ -833,7 +833,7 @@ const WAVE_RAM_START: usize = 0x130;
             }
 
             if self.channel_4_length_enable {
-                if self.channel_4_length_timer == 255 {
+                if self.channel_4_length_timer >= 64 {
                     eprintln!("channel 4 length complete");
                     self.channel_4_length_enable = false;
                     self.channel_4_length_timer = 0;
@@ -845,6 +845,8 @@ const WAVE_RAM_START: usize = 0x130;
 
             length_clocks -= DIV_APU_CLOCK_HACK;
         }
+
+        self.clocks_since_length_tick = length_clocks;
     }
 
     // TODO: NR51
