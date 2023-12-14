@@ -57,6 +57,15 @@ impl miniquad::EventHandler for GBCPainter {
             if egui_ctx.input(|i| i.key_down(egui::Key::E)) {
                 gb.do_input(crate::Input::Select);
             }
+            if egui_ctx.input(|i| i.key_down(egui::Key::O)) {
+                gb.do_input(crate::Input::BankToggleBackground);
+            }
+            if egui_ctx.input(|i| i.key_down(egui::Key::P)) {
+                gb.do_input(crate::Input::BankToggleOam);
+            }
+            if egui_ctx.input(|i| i.key_down(egui::Key::V)) {
+                gb.do_input(crate::Input::VerboseToggle);
+            }
             if egui_ctx.input(|i| i.key_down(egui::Key::Z)) {
                 gb.do_input(crate::Input::A);
             }

@@ -22,6 +22,7 @@ rand = "0.8.5"
 egui-miniquad = "0.14.0"
 miniquad = "*"
 egui = "*"
+rodio = { version = "*", default-feature = false }
 
 # common interfaces for all yaxpeax decoders
 yaxpeax-arch = { version = "0.2.4" , default-features = false, features = ["std"] }

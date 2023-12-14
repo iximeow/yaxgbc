@@ -33,7 +33,13 @@ fn main() {
 
     let mut gb = GBC::new(bootrom);
 
+    let (_stream, stream_handle) = rodio::OutputStream::try_default().unwrap();
+    let audio_sink = rodio::Sink::try_new(&stream_handle).expect("can build audio sink");
+
     gb.set_cart(cart);
+    gb.set_audio(audio_sink);
+
+//    stream_handle.play_raw(audio_sink);
 
     let sins = Arc::new(Mutex::new(gb));
 
@@ -118,14 +124,14 @@ fn main() {
                     last_overshoot = 0;
                 } else {
                     let to_sleep = std::time::Duration::from_micros((micros_to_sleep - last_overshoot) as u64);
-                    eprintln!("beat frame time by {:0.4}ms", to_sleep.as_micros() as f64 / 1000.0);
+//                    eprintln!("beat frame time by {:0.4}ms", to_sleep.as_micros() as f64 / 1000.0);
                     std::mem::drop(gb);
 
                     std::thread::sleep(to_sleep);
                     let slept = now.elapsed().unwrap();
                     if slept > to_sleep {
                         let overshoot = slept.as_micros() - to_sleep.as_micros();
-                        eprintln!("overshot by {}micros, frame budget is {}", overshoot, 16666 - overshoot);
+//                        eprintln!("overshot by {}micros, frame budget is {}", overshoot, 16666 - overshoot);
                         last_overshoot = overshoot;
                     } else {
                         last_overshoot = 0;
@@ -140,40 +146,74 @@ fn main() {
     }
 }
 
+/// cpu hz / audio hz. comes out to 95, actual value is 95.01133786... we'll see what 0.01% does in
+/// practice..
+const CLOCKS_PER_SAMPLE: u64 = 4_190_000 / 44100;
+
 struct Apu {
     apu_active: bool,
+    rendered_sound: Vec<f32>,
+    clocks_since_length_tick: u64,
+    /// the number of clocks since the last sample that was rendered out.
+    ///
+    /// at a clock speed of 4.19mhz and a 44100hz output, that leaves about 95 clocks per sample.
+    /// every 256 samples, we flush rendered_sound out to the audio sink (if one exists), meaning
+    /// the buffering delay introduced here is at worst 0.58ms (1 / 44.1khz * 256).
+    sample_clock: u64,
     nr50: u8,
     nr51: u8,
     channel_active: [bool; 4],
-    channel_1_pace: i8,
-    channel_1_sweep_slope: u8,
+    channel_1_dac_enable: bool,
+    channel_1_clocks_since_sample: u64,
+    channel_1_clocks_since_envelope_tick: u64,
+    channel_1_clocks_since_sweep_tick: u64,
+    channel_1_length_timer: u8,
+    channel_1_period_sweep_pace: u8,
+    channel_1_period_sweep_direction: bool,
+    channel_1_period_step: u8,
     channel_1_wave_duty: u8,
     channel_1_initial_length: u8,
     channel_1_initial_volume: u8,
+    channel_1_index: u8,
+    channel_1_volume: u8,
     channel_1_envelope_direction: bool,
     channel_1_sweep_pace: u8,
     channel_1_wavelength: u16,
-    channel_1_sound_length_enable: bool,
+    channel_1_length_enable: bool,
     channel_1_trigger: bool,
+    channel_2_dac_enable: bool,
+    channel_2_clocks_since_sample: u64,
+    channel_2_clocks_since_envelope_tick: u64,
+    channel_2_length_timer: u8,
     channel_2_pace: i8,
-    channel_2_sweep_slope: u8,
     channel_2_wave_duty: u8,
     channel_2_initial_length: u8,
     channel_2_initial_volume: u8,
+    channel_2_index: u8,
+    channel_2_volume: u8,
     channel_2_envelope_direction: bool,
     channel_2_sweep_pace: u8,
+    /// this is also called "period value" in the pan docs
     channel_2_wavelength: u16,
-    channel_2_sound_length_enable: bool,
+    channel_2_length_enable: bool,
     channel_2_trigger: bool,
     channel_3_dac_enable: bool,
+    channel_3_index: u8,
+    channel_3_clocks_since_sample: u64,
     channel_3_length_timer: u8,
     channel_3_output_level: u8,
     channel_3_wavelength: u16,
     channel_3_trigger: bool,
-    channel_3_sound_length_enable: bool,
+    channel_3_length_enable: bool,
     channel_3_wave_ram: [u8; 16],
+    channel_4_dac_enable: bool,
+    channel_4_clocks_since_sample: u64,
+    channel_4_clocks_since_envelope_tick: u64,
+    channel_4_last_sample: bool,
     channel_4_length_timer: u8,
+    channel_4_length_enable: bool,
     channel_4_initial_volume: u8,
+    channel_4_volume: u8,
     channel_4_envelope_direction: bool,
     channel_4_sweep_pace: u8,
     channel_4_clock_shift: u8,
@@ -181,17 +221,18 @@ struct Apu {
     channel_4_clock_divider: u8,
     channel_4_wavelength: u16,
     channel_4_trigger: bool,
-    channel_4_sound_length_enable: bool,
 }
 
 impl Apu {
     fn store(&mut self, address: usize, value: u8) {
         match address {
             NR10 => {
-                let sweep_pace = (value & 0x70) >> 4;
-                let sweep_direction = (value & 0x08) >> 3;
-                let slope_control = (value & 0x07);
-                eprintln!("todo: NR10");
+                let period_sweep_pace = (value & 0x70) >> 4;
+                let period_sweep_direction = (value & 0x08) >> 3;
+                let period_step = (value & 0x07);
+                self.channel_1_period_sweep_pace = period_sweep_pace;
+                self.channel_1_period_sweep_direction = period_sweep_direction != 0;
+                self.channel_1_period_step = period_step;
             }
             NR11 => {
                 let wave_duty = (value & 0xc0) >> 6;
@@ -217,11 +258,21 @@ impl Apu {
                 let sound_length_enable = (value & 0x40) != 0;
                 let wavelength_hi = (value & 0x07) as u16;
 
-                self.channel_1_trigger = trigger;
-                self.channel_1_sound_length_enable = trigger;
+                self.channel_1_length_enable = sound_length_enable;
                 self.channel_1_wavelength =
                     (self.channel_1_wavelength & 0x00ff) |
                     (wavelength_hi << 8);
+
+                self.channel_1_trigger = trigger;
+                if trigger {
+                    self.channel_1_dac_enable = true;
+                    self.channel_1_clocks_since_envelope_tick = 0;
+                    self.channel_1_clocks_since_sweep_tick = 0;
+                    self.channel_1_clocks_since_sample = 0;
+                    eprintln!("channel 1 activated, vol={}, wavelength={:03x}", self.channel_1_initial_volume, self.channel_1_wavelength);
+                    self.channel_1_volume = self.channel_1_initial_volume;
+                    self.channel_1_length_timer = self.channel_1_initial_length;
+                }
             }
             0x115 => {
                 // not used? not documented at least
@@ -253,11 +304,20 @@ impl Apu {
                 let sound_length_enable = (value & 0x40) != 0;
                 let wavelength_hi = (value & 0x07) as u16;
 
-                self.channel_2_trigger = trigger;
-                self.channel_2_sound_length_enable = trigger;
+                self.channel_2_length_enable = sound_length_enable;
                 self.channel_2_wavelength =
                     (self.channel_2_wavelength & 0x00ff) |
                     (wavelength_hi << 8);
+
+                self.channel_2_trigger = trigger;
+                if trigger {
+                    self.channel_2_dac_enable = true;
+                    self.channel_2_clocks_since_envelope_tick = 0;
+                    self.channel_2_clocks_since_sample = 0;
+                    eprintln!("channel 2 activated, vol={}, wavelength={:03x}", self.channel_2_initial_volume, self.channel_2_wavelength);
+                    self.channel_2_volume = self.channel_2_initial_volume;
+                    self.channel_2_length_timer = self.channel_2_initial_length;
+                }
             }
             NR30 => {
                 self.channel_3_dac_enable = (value & 0x80) != 0;
@@ -282,7 +342,11 @@ impl Apu {
                 let wavelength_hi = (value & 0x07) as u16;
 
                 self.channel_3_trigger = trigger;
-                self.channel_3_sound_length_enable = trigger;
+                if trigger {
+                    self.channel_3_dac_enable = true;
+                    self.channel_3_clocks_since_sample = 0;
+                }
+                self.channel_3_length_enable = sound_length_enable;
                 self.channel_3_wavelength =
                     (self.channel_3_wavelength & 0x00ff) |
                     (wavelength_hi << 8);
@@ -312,7 +376,13 @@ impl Apu {
                 let sound_length_enable = (value & 0x40) != 0;
 
                 self.channel_4_trigger = trigger;
-                self.channel_4_sound_length_enable = trigger;
+                if trigger {
+                    self.channel_4_dac_enable = true;
+                    self.channel_4_clocks_since_envelope_tick = 0;
+                    self.channel_4_clocks_since_sample = 0;
+                }
+                self.channel_4_volume = self.channel_4_initial_volume;
+                self.channel_4_length_enable = sound_length_enable;
             }
             NR50 => {
 //                eprintln!("support master volume...");
@@ -350,13 +420,14 @@ impl Apu {
             }
             NR52 => {
                 (self.apu_active as u8) << 7 |
-                (self.channel_active[3] as u8) << 3 |
-                (self.channel_active[2] as u8) << 2 |
-                (self.channel_active[1] as u8) << 1 |
-                (self.channel_active[0] as u8) << 0
+                (self.channel_4_dac_enable as u8) << 3 |
+                (self.channel_3_dac_enable as u8) << 2 |
+                (self.channel_2_dac_enable as u8) << 1 |
+                (self.channel_1_dac_enable as u8) << 0
             },
             _ => {
-                panic!("load unhandled register {:04x}", address);
+                0
+                // panic!("load unhandled register {:04x}", address);
             }
         }
     }
@@ -387,39 +458,62 @@ const WAVE_RAM_START: usize = 0x130;
 */
     fn new() -> Self {
         Self {
+            rendered_sound: Vec::new(),
+            sample_clock: 0,
+            clocks_since_length_tick: 0,
             apu_active: false,
             nr50: 0,
             nr51: 0,
             channel_active: [false; 4],
-            channel_1_pace: 0,
-            channel_1_sweep_slope: 0,
+            channel_1_dac_enable: false,
+            channel_1_clocks_since_sample: 0,
+            channel_1_clocks_since_envelope_tick: 0,
+            channel_1_clocks_since_sweep_tick: 0,
+            channel_1_length_timer: 0,
+            channel_1_period_sweep_pace: 0,
+            channel_1_period_sweep_direction: false,
+            channel_1_period_step: 0,
             channel_1_wave_duty: 0,
             channel_1_initial_length: 0,
             channel_1_initial_volume: 0,
+            channel_1_index: 0,
+            channel_1_volume: 0,
             channel_1_envelope_direction: false,
             channel_1_sweep_pace: 0,
             channel_1_wavelength: 0,
-            channel_1_sound_length_enable: false,
+            channel_1_length_enable: false,
             channel_1_trigger: false,
+            channel_2_dac_enable: false,
+            channel_2_clocks_since_sample: 0,
+            channel_2_clocks_since_envelope_tick: 0,
+            channel_2_length_timer: 0,
             channel_2_pace: 0,
-            channel_2_sweep_slope: 0,
             channel_2_wave_duty: 0,
             channel_2_initial_length: 0,
             channel_2_initial_volume: 0,
+            channel_2_index: 0,
+            channel_2_volume: 0,
             channel_2_envelope_direction: false,
             channel_2_sweep_pace: 0,
             channel_2_wavelength: 0,
-            channel_2_sound_length_enable: false,
+            channel_2_length_enable: false,
             channel_2_trigger: false,
             channel_3_dac_enable: false,
+            channel_3_index: 0,
+            channel_3_clocks_since_sample: 0,
             channel_3_length_timer: 0,
             channel_3_output_level: 0,
             channel_3_wavelength: 0,
             channel_3_trigger: false,
-            channel_3_sound_length_enable: false,
+            channel_3_length_enable: false,
             channel_3_wave_ram: [0; 16],
+            channel_4_dac_enable: false,
+            channel_4_last_sample: false,
+            channel_4_clocks_since_envelope_tick: 0,
             channel_4_length_timer: 0,
+            channel_4_length_enable: false,
             channel_4_initial_volume: 0,
+            channel_4_volume: 0,
             channel_4_envelope_direction: false,
             channel_4_sweep_pace: 0,
             channel_4_clock_shift: 0,
@@ -427,11 +521,369 @@ const WAVE_RAM_START: usize = 0x130;
             channel_4_clock_divider: 0,
             channel_4_wavelength: 0,
             channel_4_trigger: false,
-            channel_4_sound_length_enable: false,
+            channel_4_clocks_since_sample: 0,
         }
     }
 
-    fn advance_clock(&mut self, clocks: u64) {
+    fn clocks_per_ch1_sweep_tick(&self) -> u64 {
+        (4_190_000 / 128) * self.channel_1_period_sweep_pace as u64
+    }
+
+    fn clocks_per_envelope_tick(&self) -> u64 {
+        4_190_000 / 64
+    }
+
+    fn update_channel_1(&mut self, clocks: u64) -> f32 {
+        if !self.channel_1_dac_enable {
+            return 0.0f32;
+        }
+
+        // pace, not "sweep pace" here, even though this is implementation of "channel 1 sweep"
+        // functionality. probably should be sweep pace with others describing "envelope pace"
+        // or something...
+        if self.channel_1_period_sweep_pace != 0 {
+            self.channel_1_clocks_since_sweep_tick += clocks;
+            if self.channel_1_clocks_since_sweep_tick > self.clocks_per_ch1_sweep_tick() {
+                self.channel_1_clocks_since_sweep_tick -= self.clocks_per_ch1_sweep_tick();
+                // note direction is opposite of the meaning of envelope direction elsewhere...
+                if !self.channel_1_period_sweep_direction {
+                    let new_wavelength = self.channel_1_wavelength as i32 + (self.channel_1_wavelength / (2 << self.channel_1_period_step)) as i32;
+                    eprintln!("sweep tick up: wavelength={}", new_wavelength);
+                    if new_wavelength > 0x7ff {
+                        eprintln!("disabled channel 1 because wavelength overflow");
+                        self.channel_1_dac_enable = false;
+                    } else {
+                        self.channel_1_wavelength = new_wavelength as u16;
+                    }
+                } else {
+                    let new_wavelength = self.channel_1_wavelength as i32 - (self.channel_1_wavelength / (2 << self.channel_1_period_step)) as i32;
+                    eprintln!("sweep tick down: wavelength={}", new_wavelength);
+                    if new_wavelength < 0 {
+                        self.channel_1_wavelength = 0;
+                    } else {
+                        self.channel_1_wavelength = new_wavelength as u16;
+                    }
+                };
+            }
+        }
+        // see channel 2 docs about overkill here
+        //
+        if self.channel_1_sweep_pace != 0 {
+            self.channel_1_clocks_since_envelope_tick += clocks;
+            if self.channel_1_clocks_since_envelope_tick > self.clocks_per_envelope_tick() * self.channel_1_sweep_pace as u64 {
+                self.channel_1_clocks_since_envelope_tick -= self.clocks_per_envelope_tick() * self.channel_1_sweep_pace as u64;
+                self.channel_1_volume = if self.channel_1_envelope_direction {
+                    std::cmp::min(15, self.channel_1_volume + 1)
+                } else {
+                    std::cmp::max(0, self.channel_1_volume as i8 - 1) as u8
+                };
+                eprintln!("channel 1 vol={}, wavelength={:03x}", self.channel_1_volume, self.channel_1_wavelength);
+            }
+        }
+
+        self.channel_1_clocks_since_sample += clocks;
+        if self.channel_1_clocks_since_sample > self.channel_1_clocks_per_sample() {
+            self.channel_1_clocks_since_sample -= self.channel_1_clocks_per_sample();
+            self.channel_1_index = (self.channel_1_index + 1) & 0x7;
+        }
+
+        // yoinked from the NR11 docs here:
+        // https://gbdev.io/pandocs/Audio_Registers.html#ff11--nr11-channel-1-length-timer--duty-cycle
+        const WAVEFORMS: &'static [[u8; 8]; 4] = &[
+            [1, 1, 1, 1, 1, 1, 1, 0],
+            [0, 1, 1, 1, 1, 1, 1, 0],
+            [0, 1, 1, 1, 1, 0, 0, 0],
+            [1, 0, 0, 0, 0, 0, 0, 1],
+        ];
+
+        let sample = WAVEFORMS[self.channel_1_wave_duty as usize][self.channel_1_index as usize];
+
+        if sample == 0 {
+            0.0
+        } else {
+            (self.channel_1_volume as f32) / 16.0f32
+        }
+    }
+
+    fn channel_1_clocks_per_sample(&self) -> u64 {
+        return 4 * (2048 - self.channel_1_wavelength as u64);
+        let period_value = self.channel_1_wavelength;
+        // magic numbers from pan docs
+        (1048576 / (2048 - period_value as u64))
+    }
+
+
+    fn update_channel_2(&mut self, clocks: u64) -> f32 {
+        if !self.channel_2_dac_enable {
+            return 0.0f32;
+        }
+        // TODO: a more precise accounting would be to consume clocks one at a time and figure out
+        // all the timers. but i'm going to assume clocks is fairly low (4-16 typically ???) and
+        // that is overkill.
+
+        if self.channel_2_sweep_pace != 0 {
+            self.channel_2_clocks_since_envelope_tick += clocks;
+            if self.channel_2_clocks_since_envelope_tick > self.clocks_per_envelope_tick() * self.channel_2_sweep_pace as u64 {
+                self.channel_2_clocks_since_envelope_tick -= self.clocks_per_envelope_tick() * self.channel_2_sweep_pace as u64;
+                self.channel_2_volume = if self.channel_2_envelope_direction {
+                    std::cmp::min(15, self.channel_2_volume + 1)
+                } else {
+                    std::cmp::max(0, self.channel_2_volume as i8 - 1) as u8
+                };
+                eprintln!("channel 2 vol={}", self.channel_2_volume);
+            }
+        }
+
+        self.channel_2_clocks_since_sample += clocks;
+        if self.channel_2_clocks_since_sample > self.channel_2_clocks_per_sample() {
+            self.channel_2_clocks_since_sample -= self.channel_2_clocks_per_sample();
+            self.channel_2_index = (self.channel_2_index + 1) & 0x7;
+        }
+
+        // yoinked from the NR11 docs here:
+        // https://gbdev.io/pandocs/Audio_Registers.html#ff11--nr11-channel-1-length-timer--duty-cycle
+        const WAVEFORMS: &'static [[u8; 8]; 4] = &[
+            [1, 1, 1, 1, 1, 1, 1, 0],
+            [0, 1, 1, 1, 1, 1, 1, 0],
+            [0, 1, 1, 1, 1, 0, 0, 0],
+            [1, 0, 0, 0, 0, 0, 0, 1],
+        ];
+
+        let sample = WAVEFORMS[self.channel_2_wave_duty as usize][self.channel_2_index as usize];
+
+        if sample == 0 {
+            0.0
+        } else {
+            (self.channel_2_volume as f32) / 16.0f32
+        }
+    }
+
+    fn channel_2_clocks_per_sample(&self) -> u64 {
+        return 4 * (2048 - self.channel_2_wavelength as u64);
+        let period_value = self.channel_2_wavelength;
+        // magic numbers from pan docs
+        (1048576 / (2048 - period_value as u64))
+    }
+
+    fn channel_3_clocks_per_sample(&self) -> u64 {
+        return 2 * (2048 - self.channel_3_wavelength as u64);
+        let period_value = self.channel_3_wavelength;
+        // magic numbers from
+        // https://gbdev.io/pandocs/Audio_Registers.html#ff13--nr13-channel-1-period-low-write-only
+        //
+        // really, important details are "period value is an offset from 2048" aka 2^11, and "apu
+        // is clocked "once per four dots" aka with this period dividing a clock speed 1/4th the
+        // cpu (not considering double speed. TODO: not sure if this will be correctly handled or
+        // not yet)
+        (2097152 / (2048 - period_value as u64))
+    }
+
+    // what happens if in one `clocks` we update both the position in the channel 3 buffer *and*
+    // sample the buffer? which happens first?
+    //
+    // TODO: assuming this ordering isn't interesting and that we can update the position first.
+    // TODO: same for a race with sampling and the channel length. currently returns a sample then
+    // stops the channel. may stop the channel a few clocks late?
+    fn update_channel_3(&mut self, clocks: u64) -> f32 {
+        if !self.channel_3_dac_enable {
+            return 0.0f32;
+        }
+
+        self.channel_3_clocks_since_sample += clocks;
+        if self.channel_3_clocks_since_sample > self.channel_3_clocks_per_sample() {
+            self.channel_3_clocks_since_sample -= self.channel_3_clocks_per_sample();
+            self.channel_3_index = (self.channel_3_index + 1) & 0x1f;
+        }
+
+        let ch3_subindex = self.channel_3_index & 1;
+        let ch3_sample = ((self.channel_3_wave_ram[self.channel_3_index as usize / 2]) >> (4 * (1 - ch3_subindex))) & 0x0f;
+
+        let ch3_sample = match self.channel_3_output_level {
+            0b00 => 0,
+            0b01 => ch3_sample,
+            0b10 => ch3_sample >> 1,
+            _ => ch3_sample >> 2,
+        };
+
+        (ch3_sample as f32) / 16.0f32
+    }
+
+    fn channel_4_clocks_per_sample(&self) -> u64 {
+        let denominator = if self.channel_4_clock_divider == 0 {
+            (2 << (self.channel_4_clock_shift as u64)) >> 1
+        } else {
+            (2 << self.channel_4_clock_shift as u64) * self.channel_4_clock_divider as u64
+        };
+        // magic numbers from
+        // https://gbdev.io/pandocs/Audio_Registers.html#ff13--nr13-channel-1-period-low-write-only
+        (262144 / denominator)
+    }
+
+    fn update_channel_4(&mut self, clocks: u64) -> f32 {
+        if !self.channel_4_dac_enable {
+            return 0.0f32;
+        }
+
+        if self.channel_4_sweep_pace != 0 {
+            self.channel_4_clocks_since_envelope_tick += clocks;
+            if self.channel_4_clocks_since_envelope_tick > self.clocks_per_envelope_tick() * self.channel_4_sweep_pace as u64 {
+                self.channel_4_clocks_since_envelope_tick -= self.clocks_per_envelope_tick() * self.channel_4_sweep_pace as u64;
+                self.channel_4_volume = if self.channel_4_envelope_direction {
+                    std::cmp::min(15, self.channel_4_volume + 1)
+                } else {
+                    std::cmp::max(0, self.channel_4_volume as i8 - 1) as u8
+                };
+                eprintln!("channel 4 vol={}", self.channel_4_volume);
+            }
+        }
+
+        self.channel_4_clocks_since_sample += clocks;
+        if self.channel_4_clocks_since_sample > self.channel_4_clocks_per_sample() {
+            self.channel_4_clocks_since_sample -= self.channel_4_clocks_per_sample();
+            use rand::RngCore;
+            self.channel_4_last_sample = (rand::rngs::OsRng.next_u32() & 1) != 0;
+        }
+
+        let ch4_sample = if self.channel_4_last_sample {
+            self.channel_4_volume
+        } else {
+            0
+        };
+
+        (ch4_sample as f32) / 16.0f32
+    }
+
+    // TODO: this should actually track on writes to DIV, but i really really do not want to plumb
+    // that through right now...
+    fn update_lengths(&mut self, clocks: u64) {
+        let mut length_clocks = self.clocks_since_length_tick + clocks;
+        const DIV_APU_CLOCK_HACK: u64 = 4_190_000 / 256;
+        while length_clocks > DIV_APU_CLOCK_HACK {
+            if self.channel_1_length_enable {
+                self.channel_1_length_timer += 1;
+                if self.channel_1_length_timer == 64 {
+                    eprintln!("channel 1 length complete");
+                    // TODO: should also clear wave ram? maybe?
+                    self.channel_1_length_enable = false;
+                    self.channel_1_length_timer = 0;
+                    self.channel_1_dac_enable = false;
+                }
+            }
+
+            if self.channel_2_length_enable {
+                self.channel_2_length_timer += 1;
+                if self.channel_2_length_timer == 64 {
+                    eprintln!("channel 2 length complete");
+                    // TODO: should also clear wave ram? maybe?
+                    self.channel_2_length_enable = false;
+                    self.channel_2_length_timer = 0;
+                    self.channel_2_dac_enable = false;
+                }
+            }
+
+            if self.channel_3_length_enable {
+                if self.channel_3_length_timer == 255 {
+                    eprintln!("channel 3 length complete");
+                    // TODO: should also clear wave ram? maybe?
+                    self.channel_3_length_enable = false;
+                    self.channel_3_length_timer = 0;
+                    self.channel_3_dac_enable = false;
+                } else {
+                    self.channel_3_length_timer += 1;
+                }
+            }
+
+            if self.channel_4_length_enable {
+                if self.channel_4_length_timer == 255 {
+                    eprintln!("channel 4 length complete");
+                    self.channel_4_length_enable = false;
+                    self.channel_4_length_timer = 0;
+                    self.channel_4_dac_enable = false;
+                } else {
+                    self.channel_4_length_timer += 1;
+                }
+            }
+
+            length_clocks -= DIV_APU_CLOCK_HACK;
+        }
+    }
+
+    // TODO: NR51
+    // TODO: NR50
+    // TODO: DIV-APU?
+    fn advance_clock(&mut self, sink: Option<&rodio::Sink>, clocks: u64) {
+        struct RenderedSample {
+            buf: Vec<f32>,
+            pos: usize,
+        }
+
+        impl rodio::Source for RenderedSample {
+            fn current_frame_len(&self) -> Option<usize> {
+                Some(self.buf.len())
+            }
+
+            fn channels(&self) -> u16 {
+                1
+            }
+
+            fn sample_rate(&self) -> u32 {
+                44100
+            }
+
+            fn total_duration(&self) -> Option<std::time::Duration> {
+                None
+            }
+        }
+
+        impl Iterator for RenderedSample {
+            type Item = f32;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                let res = self.buf.get(self.pos).copied();
+                if res.is_some() {
+                    self.pos += 1;
+                }
+                res
+            }
+        }
+
+        if !self.apu_active {
+            return;
+        }
+
+        self.sample_clock += clocks;
+        while self.sample_clock > CLOCKS_PER_SAMPLE {
+            let ch1_sample = self.update_channel_1(CLOCKS_PER_SAMPLE);
+            let ch2_sample = self.update_channel_2(CLOCKS_PER_SAMPLE);
+            let ch3_sample = self.update_channel_3(CLOCKS_PER_SAMPLE);
+            let ch4_sample = self.update_channel_4(CLOCKS_PER_SAMPLE);
+            let sample = ch1_sample + ch2_sample + ch3_sample + ch4_sample;
+
+            // let ch3_sample = ch3_sample * 100.0;
+            // render a sample, advance forward
+            self.sample_clock -= CLOCKS_PER_SAMPLE;
+
+            self.rendered_sound.push(sample / 8.0f32); // samples are just way too loud and idk why yet
+
+            // TODO: more precisely, should update by the difference from sample_clock to
+            // CLOCKS_PER_SAMPLE, then update after each sample, and update one more time at the
+            // end for however far into the next sample period `clocks` leaves us.
+            self.update_lengths(CLOCKS_PER_SAMPLE);
+        }
+
+        if self.rendered_sound.len() >= 256 {
+            let rendered = std::mem::replace(&mut self.rendered_sound, Vec::new());
+            if let Some(sink) = sink {
+                if sink.len() == 0 {
+                    eprintln!("sink was drained? sorry, audio pop :(");
+                } else {
+                    eprintln!("sink depth: {}", sink.len());
+                }
+                // eprintln!("sample: {:?}", rendered);
+                sink.append(RenderedSample { buf: rendered, pos: 0 });
+                sink.play();
+            }
+        }
     }
 
     fn set_nr52(&mut self, v: u8) {
@@ -459,7 +911,9 @@ struct Lcd {
     object_palettes_data: [u8; 0x40],
     background_pixels: Vec<Pixel>,
     oam_pixels: [Pixel; 160],
-    display: Box<[u32; 144 * 160]>
+    display: Box<[u32; 144 * 160]>,
+    toggle_background_sprite_bank: bool,
+    toggle_oam_sprite_bank: bool,
 }
 
 #[derive(Copy, Clone, Default, PartialEq, Debug)]
@@ -549,6 +1003,8 @@ impl Lcd {
             background_pixels: Vec::new(),
             oam_pixels: [Pixel::default(); 160],
             display: Box::new([0u32; 144 * 160]),
+            toggle_background_sprite_bank: false,
+            toggle_oam_sprite_bank: false,
         }
     }
 
@@ -605,7 +1061,7 @@ impl Lcd {
     }
 
     fn background_tile_base(&self) -> u16 {
-        if self.lcdc & 0b0000_1000 == 0 {
+        if (self.lcdc & 0b0000_1000 == 0) {
             0x1800
         } else {
             0x1c00
@@ -762,6 +1218,10 @@ impl Lcd {
                             continue;
                         }
 
+                        if self.ly == 88 {
+//                            eprintln!("item {} x_end,y_end[height={}]=({}, {}), selected line {} of tile {}", i, sprite_height, x_end, y_end, selected_line, self.oam[object_addr + 2]);
+                        }
+
                         // low bit of tile index is masked to 0 in 8x16 mode
                         let tile_index = if self.lcdc & 0b100 == 0 {
                             self.oam[object_addr + 2]
@@ -779,6 +1239,17 @@ impl Lcd {
                             break;
                         }
                     }
+                    /*
+                if self.ly == 88 {
+                    for px in 0..160 {
+                        eprint!("{:03}={:02},{}", px, self.oam_pixels[px].pixel, self.oam_pixels[px].rgb);
+                        if px % 16 == 0 {
+                            eprintln!("");
+                        }
+                    }
+                    eprintln!("");
+                }
+                */
                     /*
                     self.oam_scan_items.sort_by_key(|item| item.x);
                     while self.oam_scan_items.len() > 10 {
@@ -798,7 +1269,7 @@ impl Lcd {
                         if item.x >= 168 {
                             continue;
                         }
-                        let bank = item.oam_attrs.vram_bank() as usize * 0x2000;
+                        let bank = (item.oam_attrs.vram_bank() as usize * 0x2000) ^ (if self.toggle_oam_sprite_bank { 0x2000 } else { 0 });
                         let oam_tile_addr = bank + item.tile_index as usize * 16;
                         let y_addr = if item.oam_attrs.flip_vertical() {
                             let oam_height = if self.lcdc & 0b100 == 0 {
@@ -1003,6 +1474,7 @@ struct GBC {
     cpu: Cpu,
     lcd: Lcd,
     apu: Apu,
+    audio_sink: Option<rodio::Sink>,
     boot_rom: GBCCart,
     cart: GBCCart,
     in_boot: bool,
@@ -1191,7 +1663,7 @@ impl MemoryBanks for MemoryMapping<'_> {
                     } else if reg == STAT {
                         self.management_bits[reg]
                     } else {
-                        panic!("unhandled load {:04x}", reg);
+                        //panic!("unhandled load {:04x}", reg);
                         let v = self.management_bits[reg];
                         if self.verbose {
                             eprintln!("get ${:04x} (=${:02x})", address, v);
@@ -1336,6 +1808,7 @@ impl MemoryBanks for MemoryMapping<'_> {
             } else if reg == STAT {
                 self.management_bits[reg] = value & 0b1111_0000;
             } else if reg == LYC {
+//                eprintln!("setting LYC to {:02x}", value);
                 self.management_bits[reg] = value;
             } else if reg == SCY {
                 self.management_bits[reg] = value;
@@ -1612,6 +2085,9 @@ enum Input {
     Select,
     A,
     B,
+    BankToggleBackground,
+    BankToggleOam,
+    VerboseToggle,
     Left, Right, Up, Down,
 }
 
@@ -1623,6 +2099,7 @@ impl GBC {
             lcd: Lcd::new(),
             apu: Apu::new(),
             cart: GBCCart::empty(),
+            audio_sink: None,
             boot_rom,
             in_boot: true,
             ram: [0u8; 32 * 1024],
@@ -1657,6 +2134,16 @@ impl GBC {
             Input::A => {
                 self.input_actions |= 0b0000_0001;
             },
+            Input::BankToggleBackground => {
+                self.lcd.toggle_background_sprite_bank ^= true;
+            }
+            Input::BankToggleOam => {
+                self.lcd.toggle_oam_sprite_bank ^= true;
+            }
+            Input::VerboseToggle => {
+                self.cpu.verbose ^= true;
+                self.verbose ^= true;
+            }
             Input::Down => {
                 self.input_directions |= 0b0000_1000;
             },
@@ -1674,6 +2161,10 @@ impl GBC {
 
     fn set_cart(&mut self, cart: GBCCart) {
         self.cart = cart;
+    }
+
+    fn set_audio(&mut self, sink: rodio::Sink) {
+        self.audio_sink = Some(sink);
     }
 
     fn advance_clock(&mut self, clocks: u64) {
@@ -1736,9 +2227,11 @@ impl GBC {
 
         let (vblank_int, stat_int) = self.lcd.advance_clock(&self.vram, self.management_bits[STAT], self.management_bits[LYC], system_clocks, self.management_bits[SCX], self.management_bits[SCY]);
         if vblank_int {
+//            eprintln!("fire vblank interrupt at clock {}", self.clock);
             self.management_bits[IF] |= 0b00001;
         }
         if stat_int {
+//            eprintln!("firing STAT lyc={:02x}, ly={:02x}", self.management_bits[LYC], self.lcd.ly);
             self.management_bits[IF] |= 0b00010;
         }
         self.management_bits[STAT] &= 0b1111_1100;
@@ -1746,7 +2239,7 @@ impl GBC {
         self.management_bits[LY] = self.lcd.ly;
         // for gameboy doctor
 //        self.management_bits[LY] = 0x90;
-        self.apu.advance_clock(system_clocks);
+        self.apu.advance_clock(self.audio_sink.as_ref().clone(), system_clocks);
 
         self.clock = new_clock;
     }
