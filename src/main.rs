@@ -660,10 +660,7 @@ const WAVE_RAM_START: usize = 0x130;
     }
 
     fn channel_1_clocks_per_sample(&self) -> u64 {
-        return 4 * (2048 - self.channel_1_wavelength as u64);
-        let period_value = self.channel_1_wavelength;
-        // magic numbers from pan docs
-        (1048576 / (2048 - period_value as u64))
+        4 * (2048 - self.channel_1_wavelength as u64)
     }
 
 
@@ -713,23 +710,11 @@ const WAVE_RAM_START: usize = 0x130;
     }
 
     fn channel_2_clocks_per_sample(&self) -> u64 {
-        return 4 * (2048 - self.channel_2_wavelength as u64);
-        let period_value = self.channel_2_wavelength;
-        // magic numbers from pan docs
-        (1048576 / (2048 - period_value as u64))
+        4 * (2048 - self.channel_2_wavelength as u64)
     }
 
     fn channel_3_clocks_per_sample(&self) -> u64 {
-        return 2 * (2048 - self.channel_3_wavelength as u64);
-        let period_value = self.channel_3_wavelength;
-        // magic numbers from
-        // https://gbdev.io/pandocs/Audio_Registers.html#ff13--nr13-channel-1-period-low-write-only
-        //
-        // really, important details are "period value is an offset from 2048" aka 2^11, and "apu
-        // is clocked "once per four dots" aka with this period dividing a clock speed 1/4th the
-        // cpu (not considering double speed. TODO: not sure if this will be correctly handled or
-        // not yet)
-        (2097152 / (2048 - period_value as u64))
+        2 * (2048 - self.channel_3_wavelength as u64)
     }
 
     // what happens if in one `clocks` we update both the position in the channel 3 buffer *and*
@@ -770,7 +755,8 @@ const WAVE_RAM_START: usize = 0x130;
         };
         // magic numbers from
         // https://gbdev.io/pandocs/Audio_Registers.html#ff13--nr13-channel-1-period-low-write-only
-        4_190_000 / (262144 / denominator)
+        // 2^^22 / 262144 == 16 cycles per clock
+        16 * denominator
     }
 
     fn update_channel_4(&mut self, clocks: u64) -> f32 {
