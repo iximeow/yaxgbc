@@ -156,14 +156,14 @@ fn main() {
                     last_overshoot = 0;
                 } else {
                     let to_sleep = std::time::Duration::from_micros((micros_to_sleep - last_overshoot) as u64);
-                    eprintln!("beat frame time by {:0.4}ms", to_sleep.as_micros() as f64 / 1000.0);
+//                    eprintln!("beat frame time by {:0.4}ms", to_sleep.as_micros() as f64 / 1000.0);
                     std::mem::drop(gb);
 
                     std::thread::sleep(to_sleep);
                     let slept = now.elapsed().unwrap();
                     if slept > to_sleep {
                         let overshoot = slept.as_micros() - to_sleep.as_micros();
-                        eprintln!("overshot by {}micros, frame budget is {}", overshoot, 16666 - overshoot);
+//                        eprintln!("overshot by {}micros, frame budget is {}", overshoot, 16666 - overshoot);
                         last_overshoot = overshoot;
                     } else {
                         last_overshoot = 0;
@@ -179,12 +179,12 @@ fn main() {
                 // audio buffers are 256 samples, so each buffer we're behind represents 0.58ms of
                 // playback we're behind on. call <5ms delay fine. at 100ms of delay, though, we'll
                 // add a full two milliseconds to every frame to try catching up.
-                let extra_sleep_micros = if apu_queue_depth < 10 {
+                let extra_sleep_micros = if apu_queue_depth < 4 {
                     0
-                } else if apu_queue_depth < 300 {
-                    (1500 * 300) / apu_queue_depth
+                } else if apu_queue_depth < 30 {
+                    (5000 * apu_queue_depth) / 30
                 } else {
-                    2000
+                    5000
                 };
                 frame_target = SystemTime::now() + (Duration::from_micros(16666 - last_overshoot as u64 + extra_sleep_micros));
             } else {
@@ -828,7 +828,6 @@ const WAVE_RAM_START: usize = 0x130;
                 self.channel_2_length_timer += 1;
                 if self.channel_2_length_timer == 64 {
                     eprintln!("channel 2 length complete");
-                    // TODO: should also clear wave ram? maybe?
                     self.channel_2_length_enable = false;
                     self.channel_2_length_timer = 0;
                     self.channel_2_dac_enable = false;
@@ -932,7 +931,7 @@ const WAVE_RAM_START: usize = 0x130;
                 if sink.len() == 0 {
                     eprintln!("sink was drained? sorry, audio pop :(");
                 } else {
-                    eprintln!("sink depth: {}", sink.len());
+//                    eprintln!("sink depth {}", sink.len());
                 }
                 // eprintln!("sample: {:?}", rendered);
                 sink.append(RenderedSample { buf: rendered, pos: 0 });
