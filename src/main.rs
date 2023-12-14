@@ -770,7 +770,7 @@ const WAVE_RAM_START: usize = 0x130;
         };
         // magic numbers from
         // https://gbdev.io/pandocs/Audio_Registers.html#ff13--nr13-channel-1-period-low-write-only
-        (262144 / denominator)
+        4_190_000 / (262144 / denominator)
     }
 
     fn update_channel_4(&mut self, clocks: u64) -> f32 {
