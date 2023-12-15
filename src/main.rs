@@ -412,7 +412,71 @@ impl Lcd {
     fn store(&mut self, address: u16, value: u8) {
         // TODO: if we're in a mode where you can write OAM, allow it, otherwise ignore write
         assert!(address < self.oam.len() as u16, "invalid oam store address: {:#02x}", address);
+//        eprintln!("oam ({}) write item {} = {:02x}", address / 4, address % 4, value);
         self.oam[address as usize] = value
+    }
+
+    fn render_sprite_debug(&self, vram: &[u8], display: &mut [u32; 42 * 182]) {
+        let sprite_height = if self.lcdc & 0b100 == 0 {
+            8
+        } else {
+            16
+        };
+
+        for i in 0..self.oam.len() / 4 {
+            let obj_x = 2 + (i % 4) * (8 + 2);
+            let obj_y = 2 + (i / 4) * (16 + 2);
+
+            // disregard lcdc.3; we'll draw both tiles of 8x16 images, just.. not in the right
+            // layout.
+            let tile_index = self.oam[i * 4 + 2];
+            let oam_attrs = OamAttributes(self.oam[i * 4 + 3]);
+
+            let bank = oam_attrs.vram_bank() as usize * 0x2000;
+
+            for selected_line in 0..sprite_height {
+                let y_addr = if oam_attrs.flip_vertical() {
+                    (sprite_height - 1) - selected_line
+                } else {
+                    selected_line
+                };
+                let (tile_row_lo, tile_row_hi) = {
+                    let mut oam_tile_addr = bank + tile_index as usize * 16;
+                    let mut tile_line = y_addr;
+                    if y_addr >= 8 {
+                        oam_tile_addr += 16;
+                        tile_line -= 8;
+                    }
+                    let oam_tile_data = &vram[oam_tile_addr..][..16];
+                    let lo = oam_tile_data[tile_line as usize * 2];
+                    let hi = oam_tile_data[tile_line as usize * 2 + 1];
+                    (lo, hi)
+                };
+
+                for x in 0..8 {
+                    let x = if oam_attrs.flip_horizontal() {
+                        7 - x
+                    } else {
+                        x
+                    };
+
+                    let px =
+                        (((tile_row_hi >> (7 - x)) & 1) << 1) |
+                        (((tile_row_lo >> (7 - x)) & 1) << 0);
+
+                    // 102 = OAM_DEBUG_PANEL_WIDTH
+                    let addr = obj_x + x + (obj_y + selected_line) * 42;
+
+                    if px != 0 {
+                        let rgb = Self::px2rgb(&self.object_palettes_data, oam_attrs.bg_palette(), px);
+
+                        display[addr as usize] = rgb;
+                    } else {
+                        display[addr as usize] = 0;
+                    }
+                }
+            }
+        }
     }
 
     // advance lcd state by `clocks` ticks, using `lcd_stat` to determine if we should generate an
@@ -777,6 +841,7 @@ struct GBC {
     frame_times: Vec<SystemTime>,
     cpu: Cpu,
     lcd: Lcd,
+    sprite_debug_panel: Box<[u32; 182 * 42]>,
     apu: Apu,
     audio_sink: Option<rodio::Sink>,
     boot_rom: GBCCart,
@@ -793,6 +858,7 @@ struct GBC {
     input_directions: u8,
 //    audio: Rc<GBCAudio>,
     verbose: bool,
+    show_sprite_debug_panel: bool,
 }
 
 struct MemoryMapping<'system> {
@@ -1393,6 +1459,7 @@ enum Input {
     BankToggleOam,
     VerboseToggle,
     Left, Right, Up, Down,
+    RenderSpriteDebugPanelToggle,
 }
 
 impl GBC {
@@ -1401,6 +1468,7 @@ impl GBC {
             frame_times: Vec::new(),
             cpu: Cpu::new(),
             lcd: Lcd::new(),
+            sprite_debug_panel: Box::new([0; 182 * 42]),
             apu: Apu::new(),
             cart: GBCCart::empty(),
             audio_sink: None,
@@ -1416,6 +1484,7 @@ impl GBC {
             input_actions: 0,
             input_directions: 0,
             verbose: false,
+            show_sprite_debug_panel: false,
         }
     }
 
@@ -1460,6 +1529,9 @@ impl GBC {
             Input::Right => {
                 self.input_directions |= 0b0000_0001;
             },
+            Input::RenderSpriteDebugPanelToggle => {
+                self.show_sprite_debug_panel ^= true;
+            }
         }
     }
 
@@ -1531,6 +1603,9 @@ impl GBC {
 
         let (vblank_int, stat_int) = self.lcd.advance_clock(&self.vram, self.management_bits[STAT], self.management_bits[LYC], system_clocks, self.management_bits[SCX], self.management_bits[SCY]);
         if vblank_int {
+            if self.show_sprite_debug_panel {
+                self.lcd.render_sprite_debug(&self.vram, &mut self.sprite_debug_panel);
+            }
 //            eprintln!("fire vblank interrupt at clock {}", self.clock);
             self.management_bits[IF] |= 0b00001;
         }
