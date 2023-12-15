@@ -1688,7 +1688,7 @@ impl GBC {
         }
         if mem_map.dma_requested {
             let source = (mem_map.management_bits[HDMA1] as u16) << 8 | ((mem_map.management_bits[HDMA2] as u16 & 0xf0));
-            let dest = (mem_map.management_bits[HDMA3] as u16) << 8 | ((mem_map.management_bits[HDMA4] as u16 & 0xf0));
+            let dest = ((((mem_map.management_bits[HDMA3] as u16) << 8) & 0x1fff) | 0x8000) | ((mem_map.management_bits[HDMA4] as u16 & 0xf0));
             let size = mem_map.management_bits[HDMA5] as u16;
             if size > 0x7f {
                 panic!("TODO: hblank dma");
