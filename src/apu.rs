@@ -126,7 +126,7 @@ impl Apu {
                     self.channel_1_clocks_since_envelope_tick = 0;
                     self.channel_1_clocks_since_sweep_tick = 0;
                     self.channel_1_clocks_since_sample = 0;
-                    eprintln!("channel 1 activated, vol={}, wavelength={:03x}", self.channel_1_initial_volume, self.channel_1_wavelength);
+//                    eprintln!("channel 1 activated, vol={}, wavelength={:03x}", self.channel_1_initial_volume, self.channel_1_wavelength);
                     self.channel_1_volume = self.channel_1_initial_volume;
                     self.channel_1_length_timer = self.channel_1_initial_length;
                 }
@@ -171,7 +171,7 @@ impl Apu {
                     self.channel_2_dac_enable = true;
                     self.channel_2_clocks_since_envelope_tick = 0;
                     self.channel_2_clocks_since_sample = 0;
-                    eprintln!("channel 2 activated, vol={}, wavelength={:03x}", self.channel_2_initial_volume, self.channel_2_wavelength);
+//                    eprintln!("channel 2 activated, vol={}, wavelength={:03x}", self.channel_2_initial_volume, self.channel_2_wavelength);
                     self.channel_2_volume = self.channel_2_initial_volume;
                     self.channel_2_length_timer = self.channel_2_initial_length;
                 }
@@ -406,16 +406,16 @@ const WAVE_RAM_START: usize = 0x130;
                 // note direction is opposite of the meaning of envelope direction elsewhere...
                 if !self.channel_1_period_sweep_direction {
                     let new_wavelength = self.channel_1_wavelength as i32 + (self.channel_1_wavelength / (2 << self.channel_1_period_step)) as i32;
-                    eprintln!("sweep tick up: wavelength={}", new_wavelength);
+//                    eprintln!("sweep tick up: wavelength={}", new_wavelength);
                     if new_wavelength > 0x7ff {
-                        eprintln!("disabled channel 1 because wavelength overflow");
+//                        eprintln!("disabled channel 1 because wavelength overflow");
                         self.channel_1_dac_enable = false;
                     } else {
                         self.channel_1_wavelength = new_wavelength as u16;
                     }
                 } else {
                     let new_wavelength = self.channel_1_wavelength as i32 - (self.channel_1_wavelength / (2 << self.channel_1_period_step)) as i32;
-                    eprintln!("sweep tick down: wavelength={}", new_wavelength);
+//                    eprintln!("sweep tick down: wavelength={}", new_wavelength);
                     if new_wavelength < 0 {
                         self.channel_1_wavelength = 0;
                     } else {
@@ -435,7 +435,7 @@ const WAVE_RAM_START: usize = 0x130;
                 } else {
                     std::cmp::max(0, self.channel_1_volume as i8 - 1) as u8
                 };
-                eprintln!("channel 1 vol={}, wavelength={:03x}", self.channel_1_volume, self.channel_1_wavelength);
+//                eprintln!("channel 1 vol={}, wavelength={:03x}", self.channel_1_volume, self.channel_1_wavelength);
             }
         }
 
@@ -485,7 +485,7 @@ const WAVE_RAM_START: usize = 0x130;
                 } else {
                     std::cmp::max(0, self.channel_2_volume as i8 - 1) as u8
                 };
-                eprintln!("channel 2 vol={}", self.channel_2_volume);
+//                eprintln!("channel 2 vol={}", self.channel_2_volume);
             }
         }
 
@@ -577,7 +577,7 @@ const WAVE_RAM_START: usize = 0x130;
                 } else {
                     std::cmp::max(0, self.channel_4_volume as i8 - 1) as u8
                 };
-                eprintln!("channel 4 vol={}", self.channel_4_volume);
+//                eprintln!("channel 4 vol={}", self.channel_4_volume);
             }
         }
 
@@ -606,7 +606,7 @@ const WAVE_RAM_START: usize = 0x130;
             if self.channel_1_length_enable {
                 self.channel_1_length_timer += 1;
                 if self.channel_1_length_timer == 64 {
-                    eprintln!("channel 1 length complete");
+//                    eprintln!("channel 1 length complete");
                     // TODO: should also clear wave ram? maybe?
                     self.channel_1_length_enable = false;
                     self.channel_1_length_timer = 0;
@@ -617,7 +617,7 @@ const WAVE_RAM_START: usize = 0x130;
             if self.channel_2_length_enable {
                 self.channel_2_length_timer += 1;
                 if self.channel_2_length_timer == 64 {
-                    eprintln!("channel 2 length complete");
+//                    eprintln!("channel 2 length complete");
                     self.channel_2_length_enable = false;
                     self.channel_2_length_timer = 0;
                     self.channel_2_dac_enable = false;
@@ -626,7 +626,7 @@ const WAVE_RAM_START: usize = 0x130;
 
             if self.channel_3_length_enable {
                 if self.channel_3_length_timer == 255 {
-                    eprintln!("channel 3 length complete");
+//                    eprintln!("channel 3 length complete");
                     // TODO: should also clear wave ram? maybe?
                     self.channel_3_length_enable = false;
                     self.channel_3_length_timer = 0;
@@ -638,7 +638,7 @@ const WAVE_RAM_START: usize = 0x130;
 
             if self.channel_4_length_enable {
                 if self.channel_4_length_timer >= 64 {
-                    eprintln!("channel 4 length complete");
+//                    eprintln!("channel 4 length complete");
                     self.channel_4_length_enable = false;
                     self.channel_4_length_timer = 0;
                     self.channel_4_dac_enable = false;
