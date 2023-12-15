@@ -1995,7 +1995,7 @@ impl MemoryBanks for MBC1 {
                 let addr = addr as usize + 0x4000 * bank;
                 MemoryAddress::rom(addr as u32)
             }
-        } else if addr < 0x7fff {
+        } else if addr <= 0x7fff {
             let bank_low = if self.rom_bank == 0 {
                 1
             } else {
@@ -2080,7 +2080,7 @@ impl MemoryBanks for MBC3 {
     fn translate_address(&self, addr: u16) -> MemoryAddress {
         if addr <= 0x3fff {
             MemoryAddress::rom(addr as u32)
-        } else if addr < 0x7fff {
+        } else if addr <= 0x7fff {
             let bank = self.rom_bank as usize;
             let bank = if bank == 0 {
                 1
@@ -2175,7 +2175,7 @@ impl MemoryBanks for MBC5 {
     fn translate_address(&self, addr: u16) -> MemoryAddress {
         if addr <= 0x3fff {
             MemoryAddress::rom(addr as u32)
-        } else if addr < 0x7fff {
+        } else if addr <= 0x7fff {
             let bank = u16::from_le_bytes(self.rom_bank) as usize;
             let addr = addr as usize - 0x4000 + bank * 0x4000;
             MemoryAddress::rom(addr as u32)
