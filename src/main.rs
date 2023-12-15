@@ -2177,6 +2177,7 @@ impl MemoryBanks for MBC5 {
             MemoryAddress::rom(addr as u32)
         } else if addr <= 0x7fff {
             let bank = u16::from_le_bytes(self.rom_bank) as usize;
+            let bank = bank & ((self.rom.len() / 0x4000) - 1);
             let addr = addr as usize - 0x4000 + bank * 0x4000;
             MemoryAddress::rom(addr as u32)
         } else if addr < 0xa000 {
@@ -2196,7 +2197,7 @@ impl MemoryBanks for MBC5 {
             let reg_bits = addr >> 12;
             match reg_bits {
                 0 | 1 => { self.ram_enable = value; },
-                2 => { if value == 0x70 { panic!("gotcha"); }; self.rom_bank[0] = value; },
+                2 => { self.rom_bank[0] = value; },
                 3 => { self.rom_bank[1] = value; },
                 _ => { self.ram_bank = value; },
             }
