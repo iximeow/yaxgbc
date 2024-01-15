@@ -1,5 +1,6 @@
 use std::fmt::Write;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::{STAT, SCX, SCY, IF, IE, GBC, LCDC, LY, LYC};
 
@@ -89,6 +90,9 @@ impl miniquad::EventHandler for GBCPainter {
             }
             if egui_ctx.input(|i| i.key_down(egui::Key::T)) {
                 gb.do_input(crate::Input::RenderSpriteDebugPanelToggle);
+            }
+            if egui_ctx.input(|i| i.key_down(egui::Key::L)) {
+                gb.do_input(crate::Input::Reset);
             }
         });
         let mut pixels: Vec<u8> = Vec::new();

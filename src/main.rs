@@ -1,9 +1,11 @@
 use clap::Parser;
 
 use std::fmt;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::fmt::{Write as FmtWrite};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::fmt::Write;
 use std::time::Duration;
 use std::time::SystemTime;
 
@@ -29,7 +31,20 @@ fn main() {
 
     let rom = std::fs::read(&args.file).unwrap();
 
-    let cart = GBCCart::new(rom).unwrap();
+    let save_path = format!("{}.sav", args.file);
+    let save_path = std::path::Path::new(&save_path);
+    let save = if true {
+        Some(std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&save_path)
+            .expect("can create save file"))
+    } else {
+        None
+    };
+
+    let cart = GBCCart::new(rom, save).unwrap();
 
     let bootrom = GBCCart::boot_rom(std::fs::read("cgb_boot.bin").unwrap(), &cart);
 //    let bootrom = GBCCart::boot_rom(std::fs::read("dmg_boot.bin").unwrap(), &cart);
@@ -879,6 +894,7 @@ impl<'a> fmt::Debug for MemoryMapping<'a> {
 }
 
 impl MemoryBanks for MemoryMapping<'_> {
+    fn reset(&mut self) {}
     fn translate_address(&self, addr: u16) -> MemoryAddress {
         if addr < 0x4000 {
             MemoryAddress {
@@ -1460,6 +1476,7 @@ enum Input {
     VerboseToggle,
     Left, Right, Up, Down,
     RenderSpriteDebugPanelToggle,
+    Reset,
 }
 
 impl GBC {
@@ -1486,6 +1503,29 @@ impl GBC {
             verbose: false,
             show_sprite_debug_panel: false,
         }
+    }
+
+    fn reset(&mut self) {
+        self.cpu = Cpu::new();
+        self.lcd = Lcd::new();
+        self.sprite_debug_panel = Box::new([0; 182 * 42]);
+        self.apu = Apu::new();
+        self.cart.reset();
+        // DO NOT clear the audio sink out
+        // self.audio_sink = None;
+        self.boot_rom.reset();
+        self.in_boot = true;
+        self.ram = [0u8; 32 * 1024];
+        self.vram = [0u8; 16 * 1024];
+        self.management_bits = [0u8; 0x200];
+        self.clock = 0;
+        self.div_apu = 0;
+        self.next_div_tick = 256;
+        self.next_div_apu_tick = 256;
+        self.input_actions = 0;
+        self.input_directions = 0;
+        self.verbose = false;
+        self.show_sprite_debug_panel = false;
     }
 
     fn clear_input(&mut self) {
@@ -1531,6 +1571,9 @@ impl GBC {
             },
             Input::RenderSpriteDebugPanelToggle => {
                 self.show_sprite_debug_panel ^= true;
+            }
+            Input::Reset => {
+                self.reset();
             }
         }
     }
@@ -1768,7 +1811,7 @@ enum MemoryBankControllerType {
 }
 
 impl MemoryBankControllerType {
-    fn make_mapper(&self, ram_style: RamStyle, rom_image: Box<[u8]>) -> Box<dyn MemoryBanks + Send> {
+    fn make_mapper(&self, ram_style: RamStyle, rom_image: Box<[u8]>, mut save_file: Option<File>) -> Box<dyn MemoryBanks + Send> {
         match self {
             MemoryBankControllerType::MBC1 => {
                 let ram = match ram_style {
@@ -1805,12 +1848,21 @@ impl MemoryBankControllerType {
                 })
             },
             MemoryBankControllerType::MBC5 => {
-                let ram = match ram_style {
+                let mut ram = match ram_style {
                     RamStyle::None => Vec::new().into_boxed_slice(),
                     RamStyle::Flat2kb => vec![0u8; 4 * 2 * 1024].into_boxed_slice(),
                     RamStyle::Flat8kb => vec![0u8; 4 * 8 * 1024].into_boxed_slice(),
                     RamStyle::Banked4x8kb => vec![0u8; 4 * 32 * 1024].into_boxed_slice(),
                 };
+
+                if let Some(f) = save_file.as_mut() {
+                    if f.metadata().expect("can stat").len() != 0 {
+                        f.read_exact(&mut ram).expect("read succeeds");
+                    } else {
+                        f.set_len(ram.len() as u64).expect("can size save file");
+                        eprintln!("formatting save to {}KiB", ram.len() / 1024);
+                    }
+                }
 
                 Box::new(MBC5 {
                     ram_enable: 0u8,
@@ -1818,6 +1870,7 @@ impl MemoryBankControllerType {
                     ram_bank: 0u8,
                     rom: rom_image,
                     ram: ram,
+                    save_file,
                 })
             },
             MemoryBankControllerType::None => {
@@ -1905,6 +1958,12 @@ struct GBCCart {
     mapper: Box<dyn MemoryBanks + Send>,
 }
 
+impl GBCCart {
+    fn reset(&mut self) {
+        self.mapper.reset();
+    }
+}
+
 struct MemoryAddress {
     segment: u8,
     address: u32,
@@ -1954,6 +2013,7 @@ trait MemoryBanks: fmt::Debug {
     fn load(&self, addr: u16) -> u8;
     fn store(&mut self, addr: u16, value: u8);
     fn translate_address(&self, addr: u16) -> MemoryAddress;
+    fn reset(&mut self);
 }
 
 #[derive(Debug)]
@@ -1967,6 +2027,15 @@ struct MBC1 {
 }
 
 impl MemoryBanks for MBC1 {
+    fn reset(&mut self) {
+        self.rom_bank = 0;
+        self.ram_bank = 0;
+        self.bank_mode_select = 0;
+        for i in 0..self.ram.len() {
+            self.ram[i] = 0;
+        }
+    }
+
     fn load(&self, addr: u16) -> u8 {
         let addr = self.translate_address(addr);
         match addr {
@@ -2059,6 +2128,15 @@ struct MBC3 {
 }
 
 impl MemoryBanks for MBC3 {
+    fn reset(&mut self) {
+        self.rom_bank = 0;
+        self.ram_bank = 0;
+        self.ram_enable = 0;
+        for i in 0..self.ram.len() {
+            self.ram[i] = 0;
+        }
+    }
+
     fn load(&self, addr: u16) -> u8 {
         let addr = self.translate_address(addr);
         match addr {
@@ -2148,6 +2226,7 @@ struct MBC5 {
     ram_bank: u8,
     rom: Box<[u8]>,
     ram: Box<[u8]>,
+    save_file: Option<File>,
 }
 
 impl fmt::Debug for MBC5 {
@@ -2157,6 +2236,19 @@ impl fmt::Debug for MBC5 {
 }
 
 impl MemoryBanks for MBC5 {
+    fn reset(&mut self) {
+        self.rom_bank = [0, 0];
+        self.ram_bank = 0;
+        self.ram_enable = 0;
+        for i in 0..self.ram.len() {
+            self.ram[i] = 0;
+        }
+        if let Some(f) = self.save_file.as_mut() {
+            f.seek(SeekFrom::Start(0 as u64)).expect("can seek appropriately");
+            f.read_exact(&mut self.ram).expect("read succeeds");
+        }
+    }
+
     fn load(&self, addr: u16) -> u8 {
         let addr = self.translate_address(addr);
         match addr {
@@ -2185,6 +2277,7 @@ impl MemoryBanks for MBC5 {
             MemoryAddress::rom(0)
         } else if addr < 0xc000 {
             let bank = self.ram_bank as usize;
+            let bank = bank & ((self.ram.len() / 0x2000) - 1);
             let addr = addr as usize - 0xa000 + bank * 0x2000;
             MemoryAddress::ram(addr as u32)
         } else {
@@ -2208,6 +2301,11 @@ impl MemoryBanks for MBC5 {
             let addr = self.translate_address(addr);
             debug_assert!(addr.segment == SEGMENT_RAM);
             self.ram[addr.address as usize] = value;
+            if let Some(f) = self.save_file.as_mut() {
+                f.seek(SeekFrom::Start(addr.address as u64)).expect("can seek appropriately");
+                f.write_all(&[value]).expect("can store data");
+                f.flush().expect("can flush");
+            }
         } else {
             eprintln!("bad cart access at {:#04x}", addr);
         }
@@ -2231,6 +2329,7 @@ impl FlatMapper {
 }
 
 impl MemoryBanks for FlatMapper {
+    fn reset(&mut self) {}
     fn load(&self, addr: u16) -> u8 {
         let addr = self.translate_address(addr);
         self.rom[addr.address as usize]
@@ -2265,7 +2364,7 @@ impl GBCCart {
         }
     }
 
-    fn new(data: Vec<u8>) -> Result<Self, String> {
+    fn new(data: Vec<u8>, ram: Option<File>) -> Result<Self, String> {
         let features = parse_features(data[0x147]);
 
         let size = (32 * 1024) << data[0x148];
@@ -2290,7 +2389,7 @@ impl GBCCart {
             eprintln!("rom reports memory when cartridge format reports no memory?");
         }
 
-        let mapper = features.mbc.make_mapper(ram_style, data.into_boxed_slice());
+        let mapper = features.mbc.make_mapper(ram_style, data.into_boxed_slice(), ram);
 
         eprintln!("cartridge type {:#02x}, features: {:?}", mapper.load(0x147), features);
 
@@ -2312,6 +2411,7 @@ mod test {
             ram_bank: 0u8,
             rom: rom_data.into_boxed_slice(),
             ram: vec![0u8; 32 * 1024].into_boxed_slice(),
+            save_file: None,
         };
         let mut wram = [0u8; 32 * 1024];
         let mut vram = [0u8; 16 * 1024];
