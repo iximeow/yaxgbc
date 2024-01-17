@@ -1,4 +1,5 @@
 use std::fmt;
+use std::collections::VecDeque;
 
 use rand::RngCore;
 use rand::rngs::OsRng;
@@ -9,6 +10,60 @@ use yaxpeax_sm83::SM83;
 
 use crate::{MemoryBanks, MemoryMapping};
 use crate::KEY1;
+
+const TRACE_DEPTH: usize = 40;
+
+#[derive(PartialEq, Clone, Copy)]
+pub struct BranchAddrs {
+    from: u16,
+    to: u16,
+    from_linear: crate::MemoryAddress,
+    to_linear: crate::MemoryAddress,
+}
+
+impl fmt::Debug for BranchAddrs {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:#x} ({}:{:#x}) -> {:#x} ({}:{:#x})",
+            self.from,
+            self.from_linear.segment_name(),
+            self.from_linear.address,
+            self.to,
+            self.to_linear.segment_name(),
+            self.to_linear.address,
+        )
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum BranchTrace {
+    Call { addrs: BranchAddrs },
+    Branch { addrs: BranchAddrs, count: u32 },
+    Ret { addrs: BranchAddrs },
+    Reti { addrs: BranchAddrs },
+    Int { addrs: BranchAddrs },
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum CallKind {
+    Call,
+    Int { iflags: u8 },
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct CallRecord {
+    addrs: BranchAddrs,
+    call_kind: CallKind,
+}
+
+impl CallRecord {
+    fn call(addrs: BranchAddrs) -> Self {
+        CallRecord { addrs, call_kind: CallKind::Call }
+    }
+
+    fn int(addrs: BranchAddrs, iflags: u8) -> Self {
+        CallRecord { addrs, call_kind: CallKind::Int { iflags } }
+    }
+}
 
 #[derive(Clone, PartialEq)]
 pub(crate) struct Cpu {
@@ -23,12 +78,22 @@ pub(crate) struct Cpu {
     pub ime: bool,
     pub halted: bool,
     pub verbose: bool,
+    pub branch_trace: VecDeque<BranchTrace>,
+    pub call_stack: Vec<CallRecord>,
 }
 
 pub(crate) struct ExecutionEnvironment<'env, 'storage: 'env> {
     pub cpu: &'env mut Cpu,
     pub storage: &'env mut MemoryMapping<'storage>,
     pub clocks: u16,
+}
+
+impl ExecutionEnvironment<'_, '_> {
+    fn print_branch_trace(&self) {
+        for record in self.cpu.branch_trace.iter() {
+            eprintln!("  {:?}", record);
+        }
+    }
 }
 
 impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yaxpeax_sm83::DecodeHandler<T> for ExecutionEnvironment<'_, '_> {
@@ -343,7 +408,9 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
         Ok(())
     }
     fn on_jr_unconditional(&mut self, rel: i8) -> Result<(), <SM83 as Arch>::DecodeError> {
-        self.cpu.pc = self.cpu.pc.wrapping_add(rel as i16 as u16);
+        let target = self.cpu.pc.wrapping_add(rel as i16 as u16);
+        self.cpu.trace_branch(&self.storage, self.cpu.pc, target);
+        self.cpu.pc = target;
         Ok(())
     }
     fn on_jr_nz(&mut self, rel: i8) -> Result<(), <SM83 as Arch>::DecodeError> {
@@ -371,39 +438,47 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
         Ok(())
     }
     fn on_jp_unconditional(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.cpu.trace_branch(&self.storage, self.cpu.pc, addr);
         self.cpu.pc = addr;
         Ok(())
     }
     fn on_jp_nz(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
         if (self.cpu.af[0] & 0b1000_0000) == 0 {
+            self.cpu.trace_branch(&self.storage, self.cpu.pc, addr);
             self.cpu.pc = addr;
         }
         Ok(())
     }
     fn on_jp_z(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
         if (self.cpu.af[0] & 0b1000_0000) != 0 {
+            self.cpu.trace_branch(&self.storage, self.cpu.pc, addr);
             self.cpu.pc = addr;
         }
         Ok(())
     }
     fn on_jp_nc(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
         if (self.cpu.af[0] & 0b0001_0000) == 0 {
+            self.cpu.trace_branch(&self.storage, self.cpu.pc, addr);
             self.cpu.pc = addr;
         }
         Ok(())
     }
     fn on_jp_c(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
         if (self.cpu.af[0] & 0b0001_0000) != 0 {
+            self.cpu.trace_branch(&self.storage, self.cpu.pc, addr);
             self.cpu.pc = addr;
         }
         Ok(())
     }
     fn on_jp_hl(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
-        self.cpu.pc = u16::from_le_bytes(self.cpu.hl);
+        let target = u16::from_le_bytes(self.cpu.hl);
+        self.cpu.trace_branch(&self.storage, self.cpu.pc, target);
+        self.cpu.pc = target;
         Ok(())
     }
     fn on_call_unconditional(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
         self.cpu.push(self.storage, self.cpu.pc);
+        self.cpu.trace_call(&self.storage, self.cpu.pc, addr);
         self.cpu.pc = addr;
         Ok(())
     }
@@ -880,7 +955,9 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
         Ok(())
     }
     fn on_ret_unconditional(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
-        self.cpu.pc = self.cpu.pop(self.storage);
+        let target = self.cpu.pop(self.storage);
+        self.cpu.trace_ret(&self.storage, self.cpu.pc, target);
+        self.cpu.pc = target;
         Ok(())
     }
     fn on_ret_nz(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
@@ -909,14 +986,17 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
     }
     fn on_rst(&mut self, imm: u8) -> Result<(), <SM83 as Arch>::DecodeError> {
         if imm == 0x38 {
-            eprintln!("probably bug. do you really mean to run 0xff?");
+            self.print_branch_trace();
+            panic!("probably bug. do you really mean to run 0xff?");
         }
         self.cpu.push(self.storage, self.cpu.pc);
         self.cpu.pc = imm as u16;
         Ok(())
     }
     fn on_reti(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
-        self.cpu.pc = self.cpu.pop(self.storage);
+        let target = self.cpu.pop(self.storage);
+        self.cpu.trace_reti(&self.storage, self.cpu.pc, target);
+        self.cpu.pc = target;
         self.cpu.ime = true;
         self.clocks += 16;
         Ok(())
@@ -953,7 +1033,165 @@ impl Cpu {
             ime: true,
             verbose: true,
             halted: false,
+            branch_trace: VecDeque::new(),
+            call_stack: Vec::new(),
         }
+    }
+
+    fn trace_int<'storage: 'env, 'env>(&mut self, storage: &'env MemoryMapping<'storage>, from: u16, to: u16, int_bit: u8) {
+        #[cfg(not(feature="branch-trace"))]
+        return;
+
+        let from_linear = storage.recursive_translate(from);
+        let to_linear = storage.recursive_translate(to);
+
+        let addrs = BranchAddrs {
+            from,
+            to,
+            from_linear,
+            to_linear,
+        };
+
+
+        self.branch_trace.push_front(BranchTrace::Int { addrs });
+        self.call_stack.push(CallRecord::int(addrs, int_bit));
+    }
+
+    fn trace_reti<'storage: 'env, 'env>(&mut self, storage: &'env MemoryMapping<'storage>, from: u16, to: u16) {
+        #[cfg(not(feature="branch-trace"))]
+        return;
+
+        if self.branch_trace.len() > TRACE_DEPTH {
+            self.branch_trace.pop_back();
+        }
+        let from_linear = storage.recursive_translate(from);
+        let to_linear = storage.recursive_translate(to);
+
+        let prev_rec = self.call_stack.pop();
+        match prev_rec {
+            Some(CallRecord { addrs, call_kind: CallKind::Int { iflags }}) => {
+                if addrs.from_linear != to_linear {
+                    eprintln!("matched interrupt (if: {:#08x}) at {}:{:#x} but returning to {}:{:#x}",
+                        iflags,
+                        addrs.from_linear.segment_name(),
+                        addrs.from_linear.address,
+                        to_linear.segment_name(),
+                        to_linear.address,
+                    );
+                    eprintln!("call stack as traced is ... {:?}", self.call_stack.as_slice());
+                }
+            },
+            Some(CallRecord { addrs, call_kind }) => {
+                eprintln!("reti (returning to {}:{:#x}) paired with non-interrupt at {}:{:#x}",
+                    addrs.from_linear.segment_name(),
+                    addrs.from_linear.address,
+                    to_linear.segment_name(),
+                    to_linear.address,
+                );
+                eprintln!("call stack as traced is ... {:?}", self.call_stack.as_slice());
+            }
+            None => {
+                eprintln!("reti, but not matched with an interrupt");
+            }
+        }
+
+        self.branch_trace.push_front(BranchTrace::Reti {
+            addrs: BranchAddrs {
+                from,
+                to,
+                from_linear,
+                to_linear,
+            }
+        });
+    }
+
+    fn trace_ret<'storage: 'env, 'env>(&mut self, storage: &'env MemoryMapping<'storage>, from: u16, to: u16) {
+        #[cfg(not(feature="branch-trace"))]
+        return;
+
+        if self.branch_trace.len() > TRACE_DEPTH {
+            self.branch_trace.pop_back();
+        }
+        let from_linear = storage.recursive_translate(from);
+        let to_linear = storage.recursive_translate(to);
+
+        let prev_rec = self.call_stack.pop();
+        match prev_rec {
+            Some(rec) => {
+                if rec.addrs.from_linear != to_linear {
+                    eprintln!("matched call at {}:{:#?} but returning to {}:{:#?}",
+                        rec.addrs.from_linear.segment_name(),
+                        rec.addrs.from_linear.address,
+                        to_linear.segment_name(),
+                        to_linear.address,
+                    );
+                }
+            },
+            None => {
+                eprintln!("reti, but not matched with an interrupt");
+            }
+        }
+
+        self.branch_trace.push_front(BranchTrace::Ret {
+            addrs: BranchAddrs {
+                from,
+                to,
+                from_linear,
+                to_linear,
+            }
+        });
+    }
+
+    fn trace_call<'storage: 'env, 'env>(&mut self, storage: &'env MemoryMapping<'storage>, from: u16, to: u16) {
+        #[cfg(not(feature="branch-trace"))]
+        return;
+
+        let from_linear = storage.recursive_translate(from);
+        let to_linear = storage.recursive_translate(to);
+
+        let addrs = BranchAddrs {
+            from,
+            to,
+            from_linear,
+            to_linear,
+        };
+
+        if self.branch_trace.len() > TRACE_DEPTH {
+            self.branch_trace.pop_back();
+        }
+
+        self.branch_trace.push_front(BranchTrace::Call { addrs });
+        self.call_stack.push(CallRecord::call(addrs));
+    }
+
+    fn trace_branch<'storage: 'env, 'env>(&mut self, storage: &'env MemoryMapping<'storage>, from: u16, to: u16) {
+        #[cfg(not(feature="branch-trace"))]
+        return;
+
+        let from_linear = storage.recursive_translate(from);
+        let to_linear = storage.recursive_translate(to);
+
+        let traced_addrs = BranchAddrs {
+            from,
+            to,
+            from_linear,
+            to_linear,
+        };
+
+        if let Some(front) = self.branch_trace.front_mut() {
+            if let BranchTrace::Branch { addrs, count } = front {
+                if *addrs == traced_addrs {
+                    *count += 1;
+                    return;
+                }
+            }
+        }
+
+        if self.branch_trace.len() > 10 {
+            self.branch_trace.pop_back();
+        }
+
+        self.branch_trace.push_front(BranchTrace::Branch { addrs: traced_addrs, count: 1 });
     }
 
     fn flags_clear(&mut self) {
@@ -1041,6 +1279,7 @@ impl Cpu {
                 memory.management_bits[crate::IF as usize] ^= 1 << interrupt_nr;
 
                 let interrupt_addr = 0x40 + (8 * interrupt_nr) as u16;
+                self.trace_int(memory, self.pc, interrupt_addr, 1 << interrupt_nr);
 //                eprintln!("interrupt fired {} to {:#04x}", interrupt_nr, interrupt_addr);
                 self.pc = interrupt_addr;
                 // and finally, enter the ISR with interrupts disabled again.

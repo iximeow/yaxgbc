@@ -893,6 +893,19 @@ impl<'a> fmt::Debug for MemoryMapping<'a> {
     }
 }
 
+impl MemoryMapping<'_> {
+    fn recursive_translate(&self, addr: u16) -> MemoryAddress {
+        let res = self.translate_address(addr);
+        if res.segment == SEGMENT_CART {
+            let mut res = self.cart.translate_address(res.address as u16);
+            res.segment |= 0x80;
+            res
+        } else {
+            res
+        }
+    }
+}
+
 impl MemoryBanks for MemoryMapping<'_> {
     fn reset(&mut self) {}
     fn translate_address(&self, addr: u16) -> MemoryAddress {
@@ -1710,7 +1723,7 @@ impl GBC {
 
         let pc_before = self.cpu.pc;
         let clocks = self.cpu.step(&mut mem_map);
-        if !self.in_boot && false{
+        if !self.in_boot && false {
             eprintln!(
                 "A:{:02X} F:{:02X} B:{:02X} C:{:02X} D:{:02X} E:{:02X} H:{:02X} L:{:02X} SP:{:04X} PC:{:04X} PCMEM:{:02X},{:02X},{:02X},{:02X}",
                 self.cpu.af[1],
@@ -1964,6 +1977,7 @@ impl GBCCart {
     }
 }
 
+#[derive(Copy, Clone, PartialEq)]
 struct MemoryAddress {
     segment: u8,
     address: u32,
@@ -1999,6 +2013,25 @@ impl MemoryAddress {
             address,
         }
     }
+    fn segment_name(&self) -> &'static str {
+        match self.segment {
+            SEGMENT_ROM => "rom",
+            SEGMENT_RAM => "ram",
+            SEGMENT_MANAGEMENT => "management",
+            SEGMENT_VRAM => "vram",
+            SEGMENT_CART => "cart",
+            SEGMENT_OAM => "oam",
+            SEGMENT_RTC => "rtc",
+            SEGMENT_CART_ROM => "cart:rom",
+            SEGMENT_CART_RAM => "cart:ram",
+            SEGMENT_CART_MANAGEMENT => "cart:management",
+            SEGMENT_CART_VRAM => "cart:vram",
+            SEGMENT_CART_CART => "cart:cart",
+            SEGMENT_CART_OAM => "cart:oam",
+            SEGMENT_CART_RTC => "cart:rtc",
+            _other => "other",
+        }
+    }
 }
 
 const SEGMENT_ROM: u8 = 0;
@@ -2008,6 +2041,13 @@ const SEGMENT_VRAM: u8 = 3;
 const SEGMENT_CART: u8 = 4;
 const SEGMENT_OAM: u8 = 5;
 const SEGMENT_RTC: u8 = 6;
+const SEGMENT_CART_ROM: u8 = 0x80;
+const SEGMENT_CART_RAM: u8 = 0x81;
+const SEGMENT_CART_MANAGEMENT: u8 = 0x82;
+const SEGMENT_CART_VRAM: u8 = 0x83;
+const SEGMENT_CART_CART: u8 = 0x84;
+const SEGMENT_CART_OAM: u8 = 0x85;
+const SEGMENT_CART_RTC: u8 = 0x86;
 
 trait MemoryBanks: fmt::Debug {
     fn load(&self, addr: u16) -> u8;
