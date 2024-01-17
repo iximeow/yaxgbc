@@ -2174,7 +2174,7 @@ impl MemoryBanks for MBC1 {
             if self.bank_mode_select == 0 {
                 MemoryAddress::rom(addr as u32)
             } else {
-                let bank = if self.rom.len() < 512 * 1024 {
+                let bank = if self.rom.len() <= 512 * 1024 {
                     0
                 } else {
                     self.ram_bank as usize * 16
@@ -2188,7 +2188,7 @@ impl MemoryBanks for MBC1 {
             } else {
                 self.rom_bank as usize
             };
-            let bank_high = if self.rom.len() < 512 * 1024 {
+            let bank_high = if self.rom.len() <= 512 * 1024 {
                 0
             } else {
                 self.ram_bank as usize * 16
@@ -2200,7 +2200,7 @@ impl MemoryBanks for MBC1 {
             eprintln!("bad cart access at {:#04x}", addr);
             MemoryAddress::rom(0)
         } else if addr < 0xc000 {
-            let bank = if self.ram.len() < 8 * 1024 {
+            let bank = if self.ram.len() <= 8 * 1024 {
                 0
             } else {
                 self.ram_bank as usize
@@ -2217,8 +2217,12 @@ impl MemoryBanks for MBC1 {
             let reg_bits = addr >> 12;
             match reg_bits {
                 0 | 1 => { self.ram_enable = value; },
-                2 | 3 => { self.rom_bank = value & 0b000_11111; },
-                4 | 5 => { self.ram_bank = value; },
+                2 | 3 => {
+//                    eprintln!("updating rom bank to {:#08x}", value);
+                    self.rom_bank = value & 0b000_11111; },
+                4 | 5 => {
+//                    eprintln!("updating ram bank to {:#08x}", value);
+                    self.ram_bank = value; },
                 6 | 7 => { self.bank_mode_select = value & 1; },
                 _ => { panic!("mbc1 bad mapper register bits ({:04b})", reg_bits) },
             }
@@ -2262,9 +2266,16 @@ impl MemoryBanks for MBC3 {
                 self.rom[address as usize]
             }
             MemoryAddress { segment: SEGMENT_RAM, address } => {
+                if self.ram_enable & 0x0f != 0x0a {
+                    return 0;
+                }
                 self.ram[address as usize]
             }
             MemoryAddress { segment: SEGMENT_RTC, address } => {
+//                eprintln!("read rtc word {}", address);
+                if self.ram_enable & 0x0f != 0x0a {
+                    return 0;
+                }
                 self.rtc[address as usize]
             }
             other => {
@@ -2311,7 +2322,12 @@ impl MemoryBanks for MBC3 {
                 0 | 1 => { self.ram_enable = value; },
                 2 | 3 => { self.rom_bank = if value == 0 { 1 } else { value }; },
                 4 | 5 => {
-                    self.ram_bank = value;
+                    if value <= 3 || (value >= 0x8 && value <= 0xc) {
+                        self.ram_bank = value;
+                    } else {
+                        eprintln!("TODO: tried to select invalid ram bank, defaulting to bank 0");
+                        self.ram_bank = 0;
+                    }
                 },
                 _ => {
                     eprintln!("TODO: latch clock data");
