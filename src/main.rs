@@ -2330,8 +2330,8 @@ impl MemoryBanks for MBC3 {
                     }
                 },
                 _ => {
-                    eprintln!("TODO: latch clock data");
-                    self.rtc = [59, 59, 59, 59, 59];
+//                    eprintln!("TODO: latch clock data");
+                    self.rtc = [59, 59, 23, 59, 0];
                //     panic!("latch clock data")
                 },
             }
