@@ -296,6 +296,10 @@ impl TileAttributes {
     fn bg_palette(&self) -> u8 {
         self.0 & 0b0000_0111
     }
+
+    fn priority(&self) -> bool {
+        (self.0 & 0b1000_000) != 0
+    }
 }
 
 impl Lcd {
@@ -353,6 +357,22 @@ impl Lcd {
         red | (green << 8) | (blue << 16)
     }
 
+    fn window_tile_lookup_by_nr<'a>(&self, vram: &'a [u8], tile_nr: u16) -> (&'a [u8], TileAttributes) {
+        // look up the tile number in vram bank 0
+        // then attrs for that tile number in vram bank 1
+        //
+        // tile attrs can pick between vram banks 0 and 1 for tile data itself, so we need both to
+        // find the right data.
+        let tile_map_base = self.window_tile_base() as usize;
+        let tile_id = vram[tile_map_base + tile_nr as usize];
+        let tile_attrs = TileAttributes(vram[tile_map_base + tile_nr as usize + 0x2000]);
+
+        let mut tile_data_addr = self.tile_addr_translate(tile_id);
+
+        tile_data_addr += tile_attrs.vram_bank() as usize * 0x2000;
+
+        (&vram[tile_data_addr..][..16], tile_attrs)
+    }
     fn tile_lookup_by_nr<'a>(&self, vram: &'a [u8], tile_nr: u16) -> (&'a [u8], TileAttributes) {
         // look up the tile number in vram bank 0
         // then attrs for that tile number in vram bank 1
@@ -496,7 +516,7 @@ impl Lcd {
 
     // advance lcd state by `clocks` ticks, using `lcd_stat` to determine if we should generate an
     // interrupt.
-    fn advance_clock(&mut self, vram: &[u8], lcd_stat: u8, lyc: u8, clocks: u64, scx: u8, scy: u8) -> (bool, bool) {
+    fn advance_clock(&mut self, vram: &[u8], lcd_stat: u8, lyc: u8, clocks: u64, scx: u8, scy: u8, wx: u8, wy: u8) -> (bool, bool) {
         // the number of dots (LCD clocks) to display one line. `HBlank` is whatever time is
         // necessary to meet this time, after completing mode 3.
         self.lcd_clock = self.lcd_clock.wrapping_add(clocks);
@@ -726,12 +746,26 @@ impl Lcd {
     //                eprintln!("{} sprites to draw", self.oam_scan_items.len());
                     self.background_pixels.clear();
                     let tile_base = self.background_tile_base();
+                    let window_tile_base = self.window_tile_base();
 //                    eprintln!("tile base: {:04x}", tile_base);
 //                    eprintln!("tile y: {}.{}", self.ly / 8, self.ly % 8);
                     let background_y = scy.wrapping_add(self.ly);
                     let background_x = scx + 0;
                     let tile_y = (background_y / 8) as u16;
                     let tile_yoffs = background_y as u16 % 8;
+                    // if `ly < wy` this will be `None`, and our sign that we're not drawing the
+                    // window on this line.
+                    // TODO: handle window ly separately given the window might not always be
+                    // visible..?
+                    let window_y = if self.window_enable() {
+                        self.ly.checked_sub(wy)
+                    } else {
+                        // and if the window is not enabled, `None` here bypasses later logic
+                        None
+                    };
+                    let window_coords = window_y.map(|window_y| {
+                        ((window_y / 8) as u16, (window_y as u16 % 8))
+                    });
                     for i in 0..160u8 {
                         // NOTE: if the screen is scrolled such that x would overflow past the end
                         // of the tile map, x waps back around to the left. i think.
@@ -756,6 +790,39 @@ impl Lcd {
                             (((tile_row_hi >> (7 - x_idx)) & 1) << 1) |
                             (((tile_row_lo >> (7 - x_idx)) & 1) << 0);
 
+                        let window_pixel = window_coords.and_then(|(window_y, window_y_offset)| {
+                            if i + 7 < wx {
+                                // the window y-line was visible, but still too far left to draw
+                                // it.
+                                return None;
+                            }
+
+                            let window_x = i - wx + 7;
+                            let window_tile_x = (window_x / 8) as u16;
+                            let window_tile_nr = window_y * 32 + window_tile_x;
+                            let (tile_data, attributes) = self.window_tile_lookup_by_nr(vram, window_tile_nr);
+
+                            let y_idx = if attributes.flip_vertical() {
+                                7 - tile_yoffs
+                            } else {
+                                tile_yoffs
+                            };
+                            let tile_row_lo = tile_data[y_idx as usize * 2];
+                            let tile_row_hi = tile_data[y_idx as usize * 2 + 1];
+                            let tile_xoffs = (window_x % 8);
+                            let x_idx = if attributes.flip_horizontal() {
+                                7 - tile_xoffs
+                            } else {
+                                tile_xoffs
+                            };
+                            let px =
+                                (((tile_row_hi >> (7 - x_idx)) & 1) << 1) |
+                                (((tile_row_lo >> (7 - x_idx)) & 1) << 0);
+                            Some((px, attributes))
+                        });
+
+                        let (px, attributes) = window_pixel.unwrap_or((px, attributes));
+
                         /*
                         if self.ly > 42 && self.ly < 49 {
                             eprintln!("px in = {}", px);
@@ -771,7 +838,7 @@ impl Lcd {
                         let px = Pixel {
                             pixel: px,
                             rgb,
-                            bg_priority: false,
+                            bg_priority: attributes.priority(),
                             priority: true,
                         };
 
@@ -1657,7 +1724,7 @@ impl GBC {
             clocks
         };
 
-        let (vblank_int, stat_int) = self.lcd.advance_clock(&self.vram, self.management_bits[STAT], self.management_bits[LYC], system_clocks, self.management_bits[SCX], self.management_bits[SCY]);
+        let (vblank_int, stat_int) = self.lcd.advance_clock(&self.vram, self.management_bits[STAT], self.management_bits[LYC], system_clocks, self.management_bits[SCX], self.management_bits[SCY], self.management_bits[WX], self.management_bits[WY]);
         if vblank_int {
             if self.show_sprite_debug_panel {
                 self.lcd.render_sprite_debug(&self.vram, &mut self.sprite_debug_panel);
