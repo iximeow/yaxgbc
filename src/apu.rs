@@ -656,7 +656,7 @@ const WAVE_RAM_START: usize = 0x130;
     // TODO: NR51
     // TODO: NR50
     // TODO: DIV-APU?
-    pub fn advance_clock(&mut self, sink: Option<&rodio::Sink>, clocks: u64) {
+    pub fn advance_clock(&mut self, sink: Option<&rodio::Sink>, clocks: u64, turbo: bool) {
         struct RenderedSample {
             buf: Vec<f32>,
             pos: usize,
@@ -722,6 +722,11 @@ const WAVE_RAM_START: usize = 0x130;
                 self.audio_buffer_depth = sink.len() as u64;
                 if sink.len() == 0 {
                     eprintln!("sink was drained? sorry, audio pop :(");
+                } else if self.audio_buffer_depth > 10 && turbo {
+                    // there's audio buffered and we're in turbo mode. we'll actually just skip
+                    // this buffer so as to not get an overly-deep audio buffer if and when turbo
+                    // stops happening.
+                    return;
                 } else {
 //                    eprintln!("sink depth {}", sink.len());
                 }

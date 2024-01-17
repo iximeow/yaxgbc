@@ -174,9 +174,12 @@ fn main() {
                 } else {
                     let to_sleep = std::time::Duration::from_micros((micros_to_sleep - last_overshoot) as u64);
 //                    eprintln!("beat frame time by {:0.4}ms", to_sleep.as_micros() as f64 / 1000.0);
+                    let turbo = gb.turbo;
                     std::mem::drop(gb);
 
-                    std::thread::sleep(to_sleep);
+                    if !turbo {
+                        std::thread::sleep(to_sleep);
+                    }
                     let slept = now.elapsed().unwrap();
                     if slept > to_sleep {
                         let overshoot = slept.as_micros() - to_sleep.as_micros();
@@ -941,6 +944,7 @@ struct GBC {
 //    audio: Rc<GBCAudio>,
     verbose: bool,
     show_sprite_debug_panel: bool,
+    turbo: bool,
 }
 
 struct MemoryMapping<'system> {
@@ -1233,6 +1237,7 @@ impl MemoryBanks for MemoryMapping<'_> {
                 self.lcd.set_lcdc(value);
             } else if reg == DMA {
                 let source = value as u16 * 0x100;
+//                eprintln!("doing DMA from {:04x})", source);
                 for i in 0..0xa0 {
                     let b = self.load(source + i);
                     self.store(0xfe00 + i, b);
@@ -1557,6 +1562,7 @@ enum Input {
     Left, Right, Up, Down,
     RenderSpriteDebugPanelToggle,
     Reset,
+    Turbo,
 }
 
 impl GBC {
@@ -1582,6 +1588,7 @@ impl GBC {
             input_directions: 0,
             verbose: false,
             show_sprite_debug_panel: false,
+            turbo: false,
         }
     }
 
@@ -1606,6 +1613,7 @@ impl GBC {
         self.input_directions = 0;
         self.verbose = false;
         self.show_sprite_debug_panel = false;
+        self.turbo = false;
     }
 
     fn clear_input(&mut self) {
@@ -1651,6 +1659,9 @@ impl GBC {
             },
             Input::RenderSpriteDebugPanelToggle => {
                 self.show_sprite_debug_panel ^= true;
+            }
+            Input::Turbo => {
+                self.turbo ^= true;
             }
             Input::Reset => {
                 self.reset();
@@ -1741,7 +1752,7 @@ impl GBC {
         self.management_bits[LY] = self.lcd.ly;
         // for gameboy doctor
 //        self.management_bits[LY] = 0x90;
-        self.apu.advance_clock(self.audio_sink.as_ref().clone(), system_clocks);
+        self.apu.advance_clock(self.audio_sink.as_ref().clone(), system_clocks, self.turbo);
 
         self.clock = new_clock;
     }

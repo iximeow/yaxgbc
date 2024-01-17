@@ -94,6 +94,9 @@ impl miniquad::EventHandler for GBCPainter {
             if egui_ctx.input(|i| i.key_down(egui::Key::L)) {
                 gb.do_input(crate::Input::Reset);
             }
+            if egui_ctx.input(|i| i.key_down(egui::Key::Space)) {
+                gb.do_input(crate::Input::Turbo);
+            }
         });
         let mut pixels: Vec<u8> = Vec::new();
         for y in 0..SCREEN_HEIGHT {
