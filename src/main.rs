@@ -520,6 +520,9 @@ impl Lcd {
     // advance lcd state by `clocks` ticks, using `lcd_stat` to determine if we should generate an
     // interrupt.
     fn advance_clock(&mut self, vram: &[u8], lcd_stat: u8, lyc: u8, clocks: u64, scx: u8, scy: u8, wx: u8, wy: u8) -> (bool, bool) {
+        if !self.on() {
+            return (false, false);
+        }
         // the number of dots (LCD clocks) to display one line. `HBlank` is whatever time is
         // necessary to meet this time, after completing mode 3.
         self.lcd_clock = self.lcd_clock.wrapping_add(clocks);
