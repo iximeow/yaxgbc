@@ -29,7 +29,8 @@ windows = { version = "*" }
 # common interfaces for all yaxpeax decoders
 yaxpeax-arch = { version = "0.2.4" , default-features = false, features = ["std"] }
 
-yaxpeax-sm83 = { version = "0.2", path = "/toy/yaxpeax/arch/sm83/" }
+# temporary direct git ref until i publish a yaxpeax-sm83 with tweaks learned via use here...
+yaxpeax-sm83 = { version = "0.2", git = "https://www.github.com/iximeow/yaxpeax-sm83.git", rev = "8332b3750cd3f42ca83d02347afc560b37992a69" }
 
 [profile.release]
 lto = true

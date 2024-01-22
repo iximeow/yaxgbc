@@ -1903,6 +1903,7 @@ dependencies = [
 [[package]]
 name = "yaxpeax-sm83"
 version = "0.2.0"
+source = "git+https://www.github.com/iximeow/yaxpeax-sm83.git?rev=8332b3750cd3f42ca83d02347afc560b37992a69#8332b3750cd3f42ca83d02347afc560b37992a69"
 dependencies = [
  "num_enum 0.2.3",
  "yaxpeax-arch",
