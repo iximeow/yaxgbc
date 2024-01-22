@@ -1908,12 +1908,21 @@ impl MemoryBankControllerType {
     fn make_mapper(&self, ram_style: RamStyle, rom_image: Box<[u8]>, mut save_file: Option<File>) -> Box<dyn MemoryBanks + Send> {
         match self {
             MemoryBankControllerType::MBC1 => {
-                let ram = match ram_style {
+                let mut ram = match ram_style {
                     RamStyle::None => Vec::new().into_boxed_slice(),
                     RamStyle::Flat2kb => vec![0u8; 2 * 1024].into_boxed_slice(),
                     RamStyle::Flat8kb => vec![0u8; 8 * 1024].into_boxed_slice(),
                     RamStyle::Banked4x8kb => vec![0u8; 32 * 1024].into_boxed_slice(),
                 };
+
+                if let Some(f) = save_file.as_mut() {
+                    if f.metadata().expect("can stat").len() != 0 {
+                        f.read_exact(&mut ram).expect("read succeeds");
+                    } else {
+                        f.set_len(ram.len() as u64).expect("can size save file");
+                        eprintln!("formatting save to {}KiB", ram.len() / 1024);
+                    }
+                }
 
                 Box::new(MBC1 {
                     ram_enable: 0u8,
@@ -1922,15 +1931,25 @@ impl MemoryBankControllerType {
                     bank_mode_select: 0u8,
                     rom: rom_image,
                     ram: ram,
+                    save_file,
                 })
             }
             MemoryBankControllerType::MBC3 => {
-                let ram = match ram_style {
+                let mut ram = match ram_style {
                     RamStyle::None => Vec::new().into_boxed_slice(),
                     RamStyle::Flat2kb => vec![0u8; 2 * 1024].into_boxed_slice(),
                     RamStyle::Flat8kb => vec![0u8; 8 * 1024].into_boxed_slice(),
                     RamStyle::Banked4x8kb => vec![0u8; 32 * 1024].into_boxed_slice(),
                 };
+
+                if let Some(f) = save_file.as_mut() {
+                    if f.metadata().expect("can stat").len() != 0 {
+                        f.read_exact(&mut ram).expect("read succeeds");
+                    } else {
+                        f.set_len(ram.len() as u64).expect("can size save file");
+                        eprintln!("formatting save to {}KiB", ram.len() / 1024);
+                    }
+                }
 
                 Box::new(MBC3 {
                     ram_enable: 0u8,
@@ -1939,6 +1958,7 @@ impl MemoryBankControllerType {
                     rom: rom_image,
                     ram: ram,
                     rtc: [0u8; 5],
+                    save_file,
                 })
             },
             MemoryBankControllerType::MBC5 => {
@@ -2145,6 +2165,7 @@ struct MBC1 {
     bank_mode_select: u8,
     rom: Box<[u8]>,
     ram: Box<[u8]>,
+    save_file: Option<File>,
 }
 
 impl MemoryBanks for MBC1 {
@@ -2154,6 +2175,10 @@ impl MemoryBanks for MBC1 {
         self.bank_mode_select = 0;
         for i in 0..self.ram.len() {
             self.ram[i] = 0;
+        }
+        if let Some(f) = self.save_file.as_mut() {
+            f.seek(SeekFrom::Start(0 as u64)).expect("can seek appropriately");
+            f.read_exact(&mut self.ram).expect("read succeeds");
         }
     }
 
@@ -2236,6 +2261,11 @@ impl MemoryBanks for MBC1 {
             let addr = self.translate_address(addr);
             debug_assert!(addr.segment == SEGMENT_RAM);
             self.ram[addr.address as usize] = value;
+            if let Some(f) = self.save_file.as_mut() {
+                f.seek(SeekFrom::Start(addr.address as u64)).expect("can seek appropriately");
+                f.write_all(&[value]).expect("can store data");
+                f.flush().expect("can flush");
+            }
         } else {
             eprintln!("bad cart access at {:#04x}", addr);
         }
@@ -2250,6 +2280,7 @@ struct MBC3 {
     rom: Box<[u8]>,
     ram: Box<[u8]>,
     rtc: [u8; 5],
+    save_file: Option<File>,
 }
 
 impl MemoryBanks for MBC3 {
@@ -2259,6 +2290,10 @@ impl MemoryBanks for MBC3 {
         self.ram_enable = 0;
         for i in 0..self.ram.len() {
             self.ram[i] = 0;
+        }
+        if let Some(f) = self.save_file.as_mut() {
+            f.seek(SeekFrom::Start(0 as u64)).expect("can seek appropriately");
+            f.read_exact(&mut self.ram).expect("read succeeds");
         }
     }
 
@@ -2345,6 +2380,11 @@ impl MemoryBanks for MBC3 {
             let addr = self.translate_address(addr);
             if addr.segment == SEGMENT_RAM {
                 self.ram[addr.address as usize] = value;
+                if let Some(f) = self.save_file.as_mut() {
+                    f.seek(SeekFrom::Start(addr.address as u64)).expect("can seek appropriately");
+                    f.write_all(&[value]).expect("can store data");
+                    f.flush().expect("can flush");
+                }
             } else {
                 debug_assert!(addr.segment == SEGMENT_RTC);
                 // TODO: accurate RTC semantics (respect halt bit, do something about writes with
