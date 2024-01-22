@@ -1390,6 +1390,7 @@ mod test {
             let mut result = cpu.clone();
             result.hl = 0x1284u16.to_le_bytes();
             result.pc += 2;
+            result.af[0] = 0x00;
             super::execute_test(&mut cpu, &[0xf8, 0x50]);
 
             assert_eq!(cpu, result);
