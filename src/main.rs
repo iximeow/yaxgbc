@@ -850,6 +850,7 @@ impl Lcd {
 
                         self.background_pixels.push(px);
                     }
+/*
                     if self.background_pixels.iter().all(|px| px.pixel == 0) {
 //                        eprintln!("clear line... {}", self.ly);
                         self.background_pixels[0] = Pixel {
@@ -861,6 +862,7 @@ impl Lcd {
                     } else {
 //                        eprintln!("normal line");
                     }
+*/
                     assert_eq!(self.background_pixels.len(), 160);
                 }
             } else if line_time < 80 + 168 + 208 {
