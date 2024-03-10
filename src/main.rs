@@ -89,17 +89,20 @@ fn main() {
     const CLOCKS_PER_FRAME: u64 = 4_190_000 / 60;
     let mut frame_target = SystemTime::now() + Duration::from_millis(16);
     let mut last_overshoot = 0;
+
     loop {
-
         let mut gb = sins.lock().unwrap();
-        let vblank_before = gb.management_bits[IF] & 1;
+        let mut vblank_fired = false;
 
-        clock_total = gb.run();
+        let mut vblank_before = gb.management_bits[IF] & 1;
 
-        let vblank_after = gb.management_bits[IF] & 1;
+        for _ in 0..20 {
+            gb.run();
 
-        let vblank_fired = vblank_before == 0 && vblank_after == 1;
-
+            let vblank_after = gb.management_bits[IF] & 1;
+            vblank_fired |= vblank_before == 0 && vblank_after == 1;
+            vblank_before = vblank_after;
+        }
 
         // this entire block comes from... thinking really hard, and still not really understanding
         // it all the way.
