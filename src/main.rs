@@ -234,7 +234,8 @@ struct Lcd {
     oam: [u8; 0xa0],
     background_palettes_data: [u8; 0x40],
     object_palettes_data: [u8; 0x40],
-    background_pixels: Vec<Pixel>,
+    background_pixels: [Pixel; 160],
+    curr_background_pixel: u8,
     oam_pixels: [Pixel; 160],
     display: Box<[u32; 144 * 160]>,
     toggle_background_sprite_bank: bool,
@@ -329,7 +330,8 @@ impl Lcd {
             oam: [0u8; 0xa0],
             background_palettes_data: [0u8; 0x40],
             object_palettes_data: [0u8; 0x40],
-            background_pixels: Vec::new(),
+            background_pixels: [Pixel::default(); 160],
+            curr_background_pixel: 0,
             oam_pixels: [Pixel::default(); 160],
             display: Box::new([0u32; 144 * 160]),
             toggle_background_sprite_bank: false,
@@ -564,14 +566,14 @@ impl Lcd {
             // ok, line's done and we're resetting to mode 2 (exiting mode 0)
 //            eprintln!("line {} done", self.ly);
             if self.ly < 144 {
-                for px in 0..self.background_pixels.len() {
-                    assert!(self.background_pixels.len() == 160);
+                for px in 0..(self.curr_background_pixel as usize) {
+                    assert!(self.curr_background_pixel == 160);
                     self.display[self.ly as usize * 160 + px] = self.background_pixels[px].rgb;
                     if self.oam_pixels[px].pixel != 0 && (!(self.oam_pixels[px].bg_priority && self.background_pixels[px].pixel != 0)) {
                         self.display[self.ly as usize * 160 + px] = self.oam_pixels[px].rgb;
                     }
                 }
-                self.background_pixels.clear();
+                self.curr_background_pixel = 0;
                 self.oam_pixels = [Pixel::default(); 160];
             }
 
@@ -753,7 +755,7 @@ impl Lcd {
                     }
 
     //                eprintln!("{} sprites to draw", self.oam_scan_items.len());
-                    self.background_pixels.clear();
+                    self.curr_background_pixel = 0;
                     let tile_base = self.background_tile_base();
                     let window_tile_base = self.window_tile_base();
 //                    eprintln!("tile base: {:04x}", tile_base);
@@ -851,7 +853,8 @@ impl Lcd {
                             priority: true,
                         };
 
-                        self.background_pixels.push(px);
+                        self.background_pixels[self.curr_background_pixel as usize] = px;
+                        self.curr_background_pixel += 1;
                     }
 /*
                     if self.background_pixels.iter().all(|px| px.pixel == 0) {
@@ -866,7 +869,7 @@ impl Lcd {
 //                        eprintln!("normal line");
                     }
 */
-                    assert_eq!(self.background_pixels.len(), 160);
+                    assert_eq!(self.curr_background_pixel, 160);
                 }
             } else if line_time < 80 + 168 + 208 {
                 if self.mode != 0 && (lcd_stat & 0b0000_1000 != 0) {
