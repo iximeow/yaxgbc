@@ -248,6 +248,9 @@ struct Pixel {
     pixel: u8,
     bg_priority: bool,
     priority: bool,
+    // pointless field, but having implicit padding can result in poor codegen for array
+    // initializers, see https://github.com/rust-lang/rust/issues/122274
+    _pad: u8,
 }
 
 struct OamItem {
@@ -747,6 +750,7 @@ impl Lcd {
                                     rgb,
                                     bg_priority: item.oam_attrs.bg_priority(),
                                     priority: false,
+                                    _pad: 0,
                                 };
 //                            } else {
 //                                self.oam_pixels[x_addr as usize] = Some(0xff0000);
@@ -851,6 +855,7 @@ impl Lcd {
                             rgb,
                             bg_priority: attributes.priority(),
                             priority: true,
+                            _pad: 0,
                         };
 
                         self.background_pixels[self.curr_background_pixel as usize] = px;
