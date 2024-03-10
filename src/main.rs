@@ -352,7 +352,7 @@ impl Lcd {
         let color = ((color_hi as u16) << 8) | (color_lo as u16);
         // lifted from SameBoy, i'm certain they've figured out color correction in a way i never
         // will get to..
-        const CHANNEL_CORRECTION: [u8; 32] = [
+        static CHANNEL_CORRECTION: [u8; 32] = [
               0,   6,  12,  20,  28,  36,  45,  56,
              66,  76,  88, 100, 113, 125, 137, 149,
             161, 172, 182, 192, 202, 210, 218, 225,
@@ -932,12 +932,6 @@ impl yaxpeax_arch::Reader<u16, u8> for BankReader<'_> {
     }
 }
 
-struct GBCScreen {
-    buf: Box<[u8; 1024]>,
-    mode: u8,
-    ly: u8,
-}
-
 struct GBC {
     frame_times: Vec<SystemTime>,
     cpu: Cpu,
@@ -949,7 +943,7 @@ struct GBC {
     cart: GBCCart,
     in_boot: bool,
     ram: [u8; 32 * 1024],
-    vram: [u8; 16 *  1024],
+    vram: [u8; 16 * 1024],
     management_bits: [u8; 0x200],
     clock: u64,
     div_apu: u64,
