@@ -1259,6 +1259,7 @@ impl Cpu {
         u16::from_le_bytes(bytes)
     }
 
+//    #[inline(never)]
     pub fn step<'storage: 'env, 'env>(&'env mut self, memory: &'env mut MemoryMapping<'storage>) -> u16 {
         if self.ime {
             // otherwise, interrupts are enabled, and if none have fired we will remain in

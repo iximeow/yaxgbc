@@ -572,6 +572,7 @@ impl Lcd {
 
     // advance lcd state by `clocks` ticks, using `lcd_stat` to determine if we should generate an
     // interrupt.
+//    #[inline(never)]
     fn advance_clock(&mut self, vram: &[u8], lcd_stat: u8, lyc: u8, clocks: u64, scx: u8, scy: u8, wx: u8, wy: u8) -> (bool, bool) {
         if !self.on() {
             return (false, false);
@@ -1735,6 +1736,7 @@ impl GBC {
         self.audio_sink = Some(sink);
     }
 
+//    #[inline(never)]
     fn advance_clock(&mut self, clocks: u64) {
         // practically speaking this will never overflow, but still..
         let new_clock = self.clock.wrapping_add(clocks);
