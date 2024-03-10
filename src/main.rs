@@ -233,18 +233,20 @@ struct Lcd {
     oam_scan_items: Vec<OamItem>,
     oam: [u8; 0xa0],
     background_palettes_data: [u8; 0x40],
+    background_palette_data_cache: [[u8; 4]; 0x20],
     object_palettes_data: [u8; 0x40],
+    object_palette_data_cache: [[u8; 4]; 0x20],
     background_pixels: [Pixel; 160],
     curr_background_pixel: u8,
     oam_pixels: [Pixel; 160],
-    display: Box<[u32; 144 * 160]>,
+    display: Box<[u8; 4 * 144 * 160]>,
     toggle_background_sprite_bank: bool,
     toggle_oam_sprite_bank: bool,
 }
 
 #[derive(Copy, Clone, Default, PartialEq, Debug)]
 struct Pixel {
-    rgb: u32,
+    rgb: [u8; 4],
     pixel: u8,
     bg_priority: bool,
     priority: bool,
@@ -312,6 +314,15 @@ impl TileAttributes {
     }
 }
 
+// lifted from SameBoy, i'm certain they've figured out color correction in a way i never
+// will get to..
+static CHANNEL_CORRECTION: [u8; 32] = [
+      0,   6,  12,  20,  28,  36,  45,  56,
+     66,  76,  88, 100, 113, 125, 137, 149,
+    161, 172, 182, 192, 202, 210, 218, 225,
+    232, 238, 243, 247, 250, 252, 254, 255
+];
+
 impl Lcd {
     const OAM_SCAN: u64 = 80;
     const LINE_TIME: u64 = 376 + Self::OAM_SCAN;
@@ -332,40 +343,74 @@ impl Lcd {
             oam_scan_items: Vec::new(),
             oam: [0u8; 0xa0],
             background_palettes_data: [0u8; 0x40],
+            background_palette_data_cache: [[0u8; 4]; 0x20],
             object_palettes_data: [0u8; 0x40],
+            object_palette_data_cache: [[0u8; 4]; 0x20],
             background_pixels: [Pixel::default(); 160],
             curr_background_pixel: 0,
             oam_pixels: [Pixel::default(); 160],
-            display: Box::new([0u32; 144 * 160]),
+            display: Box::new([0u8; 4 * 144 * 160]),
             toggle_background_sprite_bank: false,
             toggle_oam_sprite_bank: false,
         }
     }
 
-    fn px2rgb(palette_data: &[u8], palette_nr: u8, px: u8) -> u32 {
-        let color_lo = palette_data[
-            (palette_nr * 8 + px * 2) as usize
-        ];
-        let color_hi = palette_data[
-            (palette_nr * 8 + px * 2 + 1) as usize
-        ];
-        let color = ((color_hi as u16) << 8) | (color_lo as u16);
-        // lifted from SameBoy, i'm certain they've figured out color correction in a way i never
-        // will get to..
-        static CHANNEL_CORRECTION: [u8; 32] = [
-              0,   6,  12,  20,  28,  36,  45,  56,
-             66,  76,  88, 100, 113, 125, 137, 149,
-            161, 172, 182, 192, 202, 210, 218, 225,
-            232, 238, 243, 247, 250, 252, 254, 255
-        ];
-        let red = CHANNEL_CORRECTION[color as usize & 0x1f];
-        let green = CHANNEL_CORRECTION[(color >> 5) as usize & 0x1f];
-        let blue = CHANNEL_CORRECTION[(color >> 10) as usize & 0x1f];
+    fn recompute_palette_cache(&mut self) {
+        // indexing into color palettes as the gameboy is designed involves some unfortunate index
+        // construction and shifting. additionally, the color spectrum of the CGB LCD does not map
+        // to contemporary displays well, so the literal colors have to go through a second
+        // intensity correction LUT that makes color calculation a double-dereference *plus* index
+        // shifting and masking and ...
+        //
+        // to avoid all that, cache the corrected color palettes as they're fed into the lcd,
+        // rather than rerunning these calculations JIT style whenever the palette is accessed.
+        // this causes more work when loading color palettes, but hopefully that is significantly
+        // less common than using palettes.
+        //
+        // this function computes palette caches for both background and object palettes only
+        // because i didn't feel like making two functions.
 
-        let red = red as u32;
-        let green = green as u32;
-        let blue = blue as u32;
-        red | (green << 8) | (blue << 16)
+        for palette_nr in 0..8 {
+            for px in 0..4 {
+                let color_lo = self.background_palettes_data[palette_nr * 8 + px * 2];
+                let color_hi = self.background_palettes_data[palette_nr * 8 + px * 2 + 1];
+                let color = ((color_hi as u16) << 8) | (color_lo as u16);
+
+                let r = color & 0x1f;
+                let g = (color >> 5) & 0x1f;
+                let b = (color >> 10) & 0x1f;
+                let rgba = [
+                    CHANNEL_CORRECTION[r as usize],
+                    CHANNEL_CORRECTION[g as usize],
+                    CHANNEL_CORRECTION[b as usize],
+                    0xff
+                ];
+                self.background_palette_data_cache[palette_nr * 4 + px] = rgba;
+            }
+        }
+
+        for palette_nr in 0..8 {
+            for px in 0..4 {
+                let color_lo = self.object_palettes_data[palette_nr * 8 + px * 2];
+                let color_hi = self.object_palettes_data[palette_nr * 8 + px * 2 + 1];
+                let color = ((color_hi as u16) << 8) | (color_lo as u16);
+
+                let r = color & 0x1f;
+                let g = (color >> 5) & 0x1f;
+                let b = (color >> 10) & 0x1f;
+                let rgba = [
+                    CHANNEL_CORRECTION[r as usize],
+                    CHANNEL_CORRECTION[g as usize],
+                    CHANNEL_CORRECTION[b as usize],
+                    0xff
+                ];
+                self.object_palette_data_cache[palette_nr * 4 + px] = rgba;
+            }
+        }
+    }
+
+    fn px2rgba(palette_data_cache: &[[u8; 4]; 0x20], palette_nr: u8, px: u8) -> [u8; 4] {
+        palette_data_cache[(palette_nr * 4 + px) as usize]
     }
 
     fn window_tile_lookup_by_nr<'a>(&self, vram: &'a [u8], tile_nr: u16) -> (&'a [u8], TileAttributes) {
@@ -462,7 +507,7 @@ impl Lcd {
         self.oam[address as usize] = value
     }
 
-    fn render_sprite_debug(&self, vram: &[u8], display: &mut [u32; 42 * 182]) {
+    fn render_sprite_debug(&self, vram: &[u8], display: &mut [u8; 4 * 42 * 182]) {
         let sprite_height = if self.lcdc & 0b100 == 0 {
             8
         } else {
@@ -514,11 +559,11 @@ impl Lcd {
                     let addr = obj_x + x + (obj_y + selected_line) * 42;
 
                     if px != 0 {
-                        let rgb = Self::px2rgb(&self.object_palettes_data, oam_attrs.bg_palette(), px);
+                        let rgb = Self::px2rgba(&self.object_palette_data_cache, oam_attrs.bg_palette(), px);
 
-                        display[addr as usize] = rgb;
+                        display[addr as usize * 4..][..4].copy_from_slice(&rgb);
                     } else {
-                        display[addr as usize] = 0;
+                        display[addr as usize * 4..][..4].copy_from_slice(&[0, 0, 0, 0]);
                     }
                 }
             }
@@ -571,9 +616,10 @@ impl Lcd {
             if self.ly < 144 {
                 for px in 0..(self.curr_background_pixel as usize) {
                     assert!(self.curr_background_pixel == 160);
-                    self.display[self.ly as usize * 160 + px] = self.background_pixels[px].rgb;
+                    let addr = (self.ly as usize * 160 + px) * 4;
+                    self.display[addr..][..4].copy_from_slice(&self.background_pixels[px].rgb[..]);
                     if self.oam_pixels[px].pixel != 0 && (!(self.oam_pixels[px].bg_priority && self.background_pixels[px].pixel != 0)) {
-                        self.display[self.ly as usize * 160 + px] = self.oam_pixels[px].rgb;
+                        self.display[addr..][..4].copy_from_slice(&self.oam_pixels[px].rgb[..]);
                     }
                 }
                 self.curr_background_pixel = 0;
@@ -729,7 +775,7 @@ impl Lcd {
                                 (((tile_row_lo >> (7 - x)) & 1) << 0);
 
                             if px != 0 {
-                                let rgb = Self::px2rgb(&self.object_palettes_data, item.oam_attrs.bg_palette(), px);
+                                let rgb = Self::px2rgba(&self.object_palette_data_cache, item.oam_attrs.bg_palette(), px);
                                 /*
                                 const COLORS: &[u32] = &[
                                     0x0000ff, 0x000080, 0x000040,
@@ -843,7 +889,7 @@ impl Lcd {
                             eprintln!("px in = {}", px);
                         }
                         */
-                        let rgb = Self::px2rgb(&self.background_palettes_data, attributes.bg_palette(), px);
+                        let rgb = Self::px2rgba(&self.background_palette_data_cache, attributes.bg_palette(), px);
                         /*
                         if self.ly > 42 && self.ly < 49 {
                             eprintln!("px out = {} via palette {}, tile x,y=({}, {})", px, attributes.bg_palette(), tile_x, tile_y);
@@ -936,7 +982,7 @@ struct GBC {
     frame_times: Vec<SystemTime>,
     cpu: Cpu,
     lcd: Lcd,
-    sprite_debug_panel: Box<[u32; 182 * 42]>,
+    sprite_debug_panel: Box<[u8; 4 * 182 * 42]>,
     apu: Apu,
     audio_sink: Option<rodio::Sink>,
     boot_rom: GBCCart,
@@ -1215,6 +1261,7 @@ impl MemoryBanks for MemoryMapping<'_> {
             } else if reg == BGPD {
                 let idx = self.management_bits[BGPI] & 0x3f;
                 self.lcd.background_palettes_data[idx as usize] = value;
+                self.lcd.recompute_palette_cache();
                 if self.management_bits[BGPI] & 0x80 != 0 {
                     self.management_bits[BGPI] = 0x80 | ((idx + 1) & 0x3f);
                 }
@@ -1223,6 +1270,7 @@ impl MemoryBanks for MemoryMapping<'_> {
             } else if reg == OBPD {
                 let idx = self.management_bits[OBPI] & 0x3f;
                 self.lcd.object_palettes_data[idx as usize] = value;
+                self.lcd.recompute_palette_cache();
                 if self.management_bits[OBPI] & 0x80 != 0 {
                     self.management_bits[OBPI] = 0x80 | ((idx + 1) & 0x3f);
                 }
@@ -1581,7 +1629,7 @@ impl GBC {
             frame_times: Vec::new(),
             cpu: Cpu::new(),
             lcd: Lcd::new(),
-            sprite_debug_panel: Box::new([0; 182 * 42]),
+            sprite_debug_panel: Box::new([0; 4 * 182 * 42]),
             apu: Apu::new(),
             cart: GBCCart::empty(),
             audio_sink: None,
@@ -1605,7 +1653,7 @@ impl GBC {
     fn reset(&mut self) {
         self.cpu = Cpu::new();
         self.lcd = Lcd::new();
-        self.sprite_debug_panel = Box::new([0; 182 * 42]);
+        self.sprite_debug_panel = Box::new([0; 4 * 182 * 42]);
         self.apu = Apu::new();
         self.cart.reset();
         // DO NOT clear the audio sink out

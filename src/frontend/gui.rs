@@ -99,30 +99,26 @@ impl miniquad::EventHandler for GBCPainter {
             }
         });
         let mut pixels: Vec<u8> = Vec::new();
+        let mut addr = 0;
         for y in 0..SCREEN_HEIGHT {
             for x in 0..SCREEN_WIDTH {
-                pixels.extend_from_slice(&[
-                    ((gb.lcd.display[((y * 160) + x) as usize] >>  0) as u8),
-                    ((gb.lcd.display[((y * 160) + x) as usize] >>  8) as u8),
-                    ((gb.lcd.display[((y * 160) + x) as usize] >> 16) as u8),
-                    0xff
-                ]);
+                let next_px = &gb.lcd.display[addr * 4..][..4];
+                pixels.extend_from_slice(next_px);
+                addr += 1;
             }
         }
 
         let sprite_debug_panel_pixels: Option<Vec<u8>> = {
             if gb.show_sprite_debug_panel {
+                let mut addr = 0;
                 let mut pixels: Vec<u8> = Vec::new();
                 // OAM debug panel height
                 for y in 0..OAM_DEBUG_PANEL_HEIGHT {
                     // OAM debug panel width
                     for x in 0..42 {
-                        pixels.extend_from_slice(&[
-                            ((gb.sprite_debug_panel[((y * 42) + x) as usize] >>  0) as u8),
-                            ((gb.sprite_debug_panel[((y * 42) + x) as usize] >>  8) as u8),
-                            ((gb.sprite_debug_panel[((y * 42) + x) as usize] >> 16) as u8),
-                            0xff
-                        ]);
+                        let next_px = &gb.sprite_debug_panel[addr * 4..][..4];
+                        pixels.extend_from_slice(next_px);
+                        addr += 1;
                     }
                 }
                 Some(pixels)
