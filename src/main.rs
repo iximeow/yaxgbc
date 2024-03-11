@@ -1295,8 +1295,17 @@ impl MemoryBanks for MemoryMapping<'_> {
             } else if reg == HDMA4 {
                 self.management_bits[reg] = value;
             } else if reg == HDMA5 {
-                self.dma_requested = true;
-                self.management_bits[reg] = value;
+                let source = (self.management_bits[HDMA1] as u16) << 8 | ((self.management_bits[HDMA2] as u16 & 0xf0));
+                let dest = ((((self.management_bits[HDMA3] as u16) << 8) & 0x1fff) | 0x8000) | ((self.management_bits[HDMA4] as u16 & 0xf0));
+                let size = self.management_bits[HDMA5] as u16;
+                if size > 0x7f {
+                    panic!("TODO: hblank dma");
+                }
+                let size = size * 0x10 + 0x10;
+                for i in 0..size {
+                    self.store(dest + i, self.load(source + i));
+                }
+                self.management_bits[reg] = 0;
             } else if reg == SCX {
 //                eprintln!("SCX set to {:02x}", value);
                 self.management_bits[reg] = value;
@@ -1862,18 +1871,6 @@ impl GBC {
                 mem_map.load(self.cpu.pc + 2),
                 mem_map.load(self.cpu.pc + 3),
             );
-        }
-        if mem_map.dma_requested {
-            let source = (mem_map.management_bits[HDMA1] as u16) << 8 | ((mem_map.management_bits[HDMA2] as u16 & 0xf0));
-            let dest = ((((mem_map.management_bits[HDMA3] as u16) << 8) & 0x1fff) | 0x8000) | ((mem_map.management_bits[HDMA4] as u16 & 0xf0));
-            let size = mem_map.management_bits[HDMA5] as u16;
-            if size > 0x7f {
-                panic!("TODO: hblank dma");
-            }
-            let size = size * 0x10 + 0x10;
-            for i in 0..size {
-                mem_map.store(dest + i, mem_map.load(source + i));
-            }
         }
         if self.cpu.sp >= 0xfe00 && self.cpu.sp < 0xff80 {
             panic!("nonsense sp: ${:04x}", self.cpu.sp);

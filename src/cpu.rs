@@ -350,6 +350,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
         self.cpu.af[1] = self.storage.load(0xff00 + self.cpu.bc[0] as u16);
         Ok(())
     }
+    #[inline(always)]
     fn on_add_16b_hl_rr(&mut self, op: Reg16b) -> Result<(), <SM83 as Arch>::DecodeError> {
         let hl = u16::from_le_bytes(self.cpu.hl);
         let other = match op {
@@ -389,6 +390,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
         }
         Ok(())
     }
+    #[inline(always)]
     fn on_inc_16b_rr(&mut self, op0: Reg16b) -> Result<(), <SM83 as Arch>::DecodeError> {
         match op0 {
             Reg16b::BC => { self.cpu.bc = u16::from_le_bytes(self.cpu.bc).wrapping_add(1).to_le_bytes(); },
