@@ -656,6 +656,7 @@ const WAVE_RAM_START: usize = 0x130;
     // TODO: NR51
     // TODO: NR50
     // TODO: DIV-APU?
+//    #[inline(never)]
     pub fn advance_clock(&mut self, sink: Option<&rodio::Sink>, clocks: u64, turbo: bool) {
         struct RenderedSample {
             buf: Vec<f32>,
