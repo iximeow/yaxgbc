@@ -829,30 +829,7 @@ impl Lcd {
                         ((window_y / 8) as u16, (window_y as u16 % 8))
                     });
                     for i in 0..160u8 {
-                        // NOTE: if the screen is scrolled such that x would overflow past the end
-                        // of the tile map, x waps back around to the left. i think.
-                        let line_x = i.wrapping_add(background_x);
-                        let tile_x = (line_x / 8) as u16;
-                        let tile_nr = tile_y * 32 + tile_x;
-                        let (tile_data, attributes) = self.tile_lookup_by_nr(vram, tile_nr);
-                        let y_idx = if attributes.flip_vertical() {
-                            7 - tile_yoffs
-                        } else {
-                            tile_yoffs
-                        };
-                        let tile_row_lo = tile_data[y_idx as usize * 2];
-                        let tile_row_hi = tile_data[y_idx as usize * 2 + 1];
-                        let tile_xoffs = (i.wrapping_add(background_x)) % 8;
-                        let x_idx = if attributes.flip_horizontal() {
-                            7 - tile_xoffs
-                        } else {
-                            tile_xoffs
-                        };
-                        let px =
-                            (((tile_row_hi >> (7 - x_idx)) & 1) << 1) |
-                            (((tile_row_lo >> (7 - x_idx)) & 1) << 0);
-
-                        let window_pixel = window_coords.and_then(|(window_y, window_y_offset)| {
+                        let (line_x, tile_data, attributes) = window_coords.and_then(|(window_y, window_y_offset)| {
                             if i + 7 < wx {
                                 // the window y-line was visible, but still too far left to draw
                                 // it.
@@ -863,27 +840,33 @@ impl Lcd {
                             let window_tile_x = (window_x / 8) as u16;
                             let window_tile_nr = window_y * 32 + window_tile_x;
                             let (tile_data, attributes) = self.window_tile_lookup_by_nr(vram, window_tile_nr);
-
-                            let y_idx = if attributes.flip_vertical() {
-                                7 - tile_yoffs
-                            } else {
-                                tile_yoffs
-                            };
-                            let tile_row_lo = tile_data[y_idx as usize * 2];
-                            let tile_row_hi = tile_data[y_idx as usize * 2 + 1];
-                            let tile_xoffs = (window_x % 8);
-                            let x_idx = if attributes.flip_horizontal() {
-                                7 - tile_xoffs
-                            } else {
-                                tile_xoffs
-                            };
-                            let px =
-                                (((tile_row_hi >> (7 - x_idx)) & 1) << 1) |
-                                (((tile_row_lo >> (7 - x_idx)) & 1) << 0);
-                            Some((px, attributes))
+                            Some((window_x, tile_data, attributes))
+                        }).unwrap_or_else(|| {
+                            // NOTE: if the screen is scrolled such that x would overflow past the end
+                            // of the tile map, x waps back around to the left. i think.
+                            let line_x = i.wrapping_add(background_x);
+                            let tile_x = (line_x / 8) as u16;
+                            let tile_nr = tile_y * 32 + tile_x;
+                            let (tile_data, attributes) = self.tile_lookup_by_nr(vram, tile_nr);
+                            (line_x, tile_data, attributes)
                         });
 
-                        let (px, attributes) = window_pixel.unwrap_or((px, attributes));
+                        let y_idx = if attributes.flip_vertical() {
+                            7 - tile_yoffs
+                        } else {
+                            tile_yoffs
+                        };
+                        let tile_row_lo = tile_data[y_idx as usize * 2];
+                        let tile_row_hi = tile_data[y_idx as usize * 2 + 1];
+                        let tile_xoffs = (line_x % 8);
+                        let x_idx = if attributes.flip_horizontal() {
+                            7 - tile_xoffs
+                        } else {
+                            tile_xoffs
+                        };
+                        let px =
+                            (((tile_row_hi >> (7 - x_idx)) & 1) << 1) |
+                            (((tile_row_lo >> (7 - x_idx)) & 1) << 0);
 
                         /*
                         if self.ly > 42 && self.ly < 49 {
