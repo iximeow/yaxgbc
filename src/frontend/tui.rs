@@ -11,12 +11,12 @@ pub(crate) fn do_ui(gb_state: Arc<Mutex<GBC>>) {
 
         // dump tile data as just some kind of guess...
         println!("!!!frame!!!");
-        println!("ie: {}", gb.management_bits[IE]);
-        println!("if: {}", gb.management_bits[IF]);
-        println!("scy: {}", gb.management_bits[SCY]);
-        println!("scx: {}", gb.management_bits[SCX]);
-        println!("lcdc: {:08b}", gb.lcd.lcdc);
-        println!("stat: {:08b}", gb.management_bits[STAT]);
+        println!("ie: {}", gb.state.management_bits[IE]);
+        println!("if: {}", gb.state.management_bits[IF]);
+        println!("scy: {}", gb.state.management_bits[SCY]);
+        println!("scx: {}", gb.state.management_bits[SCX]);
+        println!("lcdc: {:08b}", gb.state.lcd.lcdc);
+        println!("stat: {:08b}", gb.state.management_bits[STAT]);
         /*
         let vbk = gb.management_bits[VBK];
         let tilemap_base = gb.lcd.background_tile_base() as usize;
@@ -74,7 +74,7 @@ pub(crate) fn do_ui(gb_state: Arc<Mutex<GBC>>) {
         */
         for i in 0..144 {
             for j in 0..160 {
-                write!(screen, "{}", [".", "+", "*", "#"][gb.lcd.display[(i * 160 + j) as usize] as usize]);
+                write!(screen, "{}", [".", "+", "*", "#"][gb.state.lcd.display[(i * 160 + j) as usize] as usize]);
             }
             write!(screen, "\n");
         }

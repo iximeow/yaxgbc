@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 use std::time::SystemTime;
+use std::mem::size_of;
 
 use yaxpeax_arch::{Decoder, ReadError};
 
@@ -94,12 +95,12 @@ fn main() {
         let mut gb = sins.lock().unwrap();
         let mut vblank_fired = false;
 
-        let mut vblank_before = gb.management_bits[IF] & 1;
+        let mut vblank_before = gb.state.management_bits[IF] & 1;
 
         for _ in 0..20 {
             gb.run();
 
-            let vblank_after = gb.management_bits[IF] & 1;
+            let vblank_after = gb.state.management_bits[IF] & 1;
             vblank_fired |= vblank_before == 0 && vblank_after == 1;
             vblank_before = vblank_after;
         }
@@ -168,7 +169,7 @@ fn main() {
                 gb.frame_times = times;
                 gb.frame_times.push(now);
 
-                let apu_queue_depth = gb.apu.audio_buffer_depth;
+                let apu_queue_depth = gb.state.apu.audio_buffer_depth;
 
                 let micros_to_sleep = frame_target.duration_since(now).unwrap().as_micros();
                 if last_overshoot > micros_to_sleep {
@@ -962,19 +963,25 @@ impl yaxpeax_arch::Reader<u16, u8> for BankReader<'_> {
     }
 }
 
-struct GBC {
-    frame_times: Vec<SystemTime>,
-    cpu: Cpu,
-    lcd: Lcd,
-    sprite_debug_panel: Box<[u8; 4 * 182 * 42]>,
-    apu: Apu,
-    audio_sink: Option<rodio::Sink>,
-    boot_rom: GBCCart,
-    cart: GBCCart,
-    in_boot: bool,
+struct GBCState {
     ram: [u8; 32 * 1024],
     vram: [u8; 16 * 1024],
     management_bits: [u8; 0x200],
+    lcd: Lcd,
+    apu: Apu,
+}
+
+struct GBC {
+    frame_times: Vec<SystemTime>,
+    state: GBCState,
+    cpu: Cpu,
+    sprite_debug_panel: Box<[u8; 4 * 182 * 42]>,
+    audio_sink: Option<rodio::Sink>,
+    // at all times two of the three below will be Some.
+    active_rom: GBCCart,
+    boot_rom: GBCCart,
+    cart: GBCCart,
+    in_boot: bool,
     clock: u64,
     div_apu: u64,
     next_div_tick: u64,
@@ -989,13 +996,8 @@ struct GBC {
 
 struct MemoryMapping<'system> {
     cart: &'system mut dyn MemoryBanks,
-    ram: &'system mut [u8],
-    vram: &'system mut [u8],
-    lcd: &'system mut Lcd,
-    apu: &'system mut Apu,
-    management_bits: &'system mut [u8],
+    state: &'system mut GBCState,
     verbose: bool,
-    dma_requested: bool,
 }
 
 impl<'a> fmt::Debug for MemoryMapping<'a> {
@@ -1031,7 +1033,7 @@ impl MemoryBanks for MemoryMapping<'_> {
                 address: addr as u32,
             }
         } else if addr < 0xa000 {
-            let offset = 0x2000 * (self.management_bits[VBK] as usize & 0b1);
+            let offset = 0x2000 * (self.state.management_bits[VBK] as usize & 0b1);
             let addr = addr as usize - 0x8000 + offset;
             MemoryAddress {
                 segment: SEGMENT_VRAM,
@@ -1046,7 +1048,7 @@ impl MemoryBanks for MemoryMapping<'_> {
             let addr = addr as usize - 0xc000;
             MemoryAddress::ram(addr as u32)
         } else if addr < 0xe000 {
-            let nr = self.management_bits[SVBK] as usize & 0b111;
+            let nr = self.state.management_bits[SVBK] as usize & 0b111;
             let nr = if nr == 0 {
                 1
             } else {
@@ -1076,76 +1078,77 @@ impl MemoryBanks for MemoryMapping<'_> {
                 self.cart.load(address as u16)
             },
             MemoryAddress { segment: SEGMENT_VRAM, address } => {
-                self.vram[address as usize]
+                self.state.vram[address as usize]
             }
             MemoryAddress { segment: SEGMENT_RAM, address } => {
-                self.ram[address as usize]
+                self.state.ram[address as usize]
             }
             MemoryAddress { segment: SEGMENT_OAM, address } => {
-                self.lcd.load(address as u16)
+                self.state.lcd.load(address as u16)
             },
             MemoryAddress { segment: SEGMENT_MANAGEMENT, address } => {
                 if address < 0x0a0 {
                     // sprite attribute table
-                    self.management_bits[address as usize]
+                    self.state.management_bits[address as usize]
                 } else if address < 0x100 {
                     // "not usable"
-                    self.management_bits[address as usize]
+                    self.state.management_bits[address as usize]
                 } else if address < 0x180 {
                     let reg = address as usize;
                     let v = if (reg >= APU_MIN_REG && reg <= APU_MAX_REG) || reg == PCM12 || reg == PCM34 {
-                        self.apu.load(reg)
+                        self.state.apu.load(reg)
                     } else if reg == JOYP {
-                        let mut res = self.management_bits[reg];
+                        let mut res = self.state.management_bits[reg];
 //                        eprintln!("reading joyp: {:08b}", res);
                         res
                     } else if reg == VBK {
                         // "Reading from this register will return the number of the currently loaded VRAM
                         // bank in bit 0, and all other bits will be set to 1."
-                        (self.management_bits[VBK] & 1) | 0b1111_1110
+                        (self.state.management_bits[VBK] & 1) | 0b1111_1110
                     } else if reg == BGPI {
-                        self.management_bits[reg]
+                        self.state.management_bits[reg]
                     } else if reg == BGPD {
-                        let idx = self.management_bits[BGPI] & 0x3f;
-                        self.lcd.background_palettes_data[idx as usize]
+                        let idx = self.state.management_bits[BGPI] & 0x3f;
+                        self.state.lcd.background_palettes_data[idx as usize]
                     } else if reg == OBPI {
-                        self.management_bits[reg]
+                        self.state.management_bits[reg]
                     } else if reg == OBPD {
-                        let idx = self.management_bits[OBPI] & 0x3f;
-                        self.lcd.object_palettes_data[idx as usize]
+                        let idx = self.state.management_bits[OBPI] & 0x3f;
+                        self.state.lcd.object_palettes_data[idx as usize]
                     } else if reg == IF {
-                        let v = self.management_bits[reg];
+                        let v = self.state.management_bits[reg];
                         if self.verbose {
                             eprintln!("getting IF=${:02x}", v);
                         }
                         v
                     } else if reg == IE {
-                        let v = self.management_bits[reg];
+                        let v = self.state.management_bits[reg];
                         if self.verbose {
                             eprintln!("getting IE=${:02x}", v);
                         }
                         v
                     } else if reg == LY {
-                        self.management_bits[reg]
+                        // self.state.management_bits[reg]
+                        self.state.lcd.ly
                     } else if reg == LCDC {
                         if self.verbose {
-                            eprintln!("getting LCDC=${:02x}", self.lcd.lcdc);
+                            eprintln!("getting LCDC=${:02x}", self.state.lcd.lcdc);
                         }
-                        self.lcd.lcdc
+                        self.state.lcd.lcdc
                     } else if reg == BGP {
-                        self.management_bits[reg]
+                        self.state.management_bits[reg]
                     } else if reg == OBP0 {
-                        self.management_bits[reg]
+                        self.state.management_bits[reg]
                     } else if reg == OBP1 {
-                        self.management_bits[reg]
+                        self.state.management_bits[reg]
                     } else if reg == BANK {
-                        self.management_bits[reg]
+                        self.state.management_bits[reg]
                     } else if reg == IF {
-                        self.management_bits[reg]
+                        self.state.management_bits[reg]
                     } else if reg == KEY0 {
-                        self.management_bits[reg]
+                        self.state.management_bits[reg]
                     } else if reg == KEY1 {
-                        self.management_bits[reg]
+                        self.state.management_bits[reg]
                     } else if reg == HDMA1 {
                         0
                     } else if reg == HDMA2 {
@@ -1155,26 +1158,27 @@ impl MemoryBanks for MemoryMapping<'_> {
                     } else if reg == HDMA4 {
                         0
                     } else if reg == SVBK {
-                        self.management_bits[reg]
+                        self.state.management_bits[reg]
                     } else if reg == SCY {
-                        self.management_bits[reg]
+                        self.state.management_bits[reg]
                     } else if reg == SCX {
-                        self.management_bits[reg]
+                        self.state.management_bits[reg]
                     } else if reg == LYC {
-                        self.management_bits[reg]
+                        self.state.management_bits[reg]
                     } else if reg == DIV {
-                        self.management_bits[reg]
+                        self.state.management_bits[reg]
                     } else if reg == TIMA {
-                        self.management_bits[reg]
+                        self.state.management_bits[reg]
                     } else if reg == TMA {
-                        self.management_bits[reg]
+                        self.state.management_bits[reg]
                     } else if reg == TAC {
-                        self.management_bits[reg]
+                        self.state.management_bits[reg]
                     } else if reg == STAT {
-                        self.management_bits[reg]
+                        (self.state.management_bits[reg] & 0b1111_1100) | self.state.lcd.mode
+                        // self.state.management_bits[reg]
                     } else {
                         //panic!("unhandled load {:04x}", reg);
-                        let v = self.management_bits[reg];
+                        let v = self.state.management_bits[reg];
                         if self.verbose {
                             eprintln!("get ${:04x} (=${:02x})", address, v);
                         }
@@ -1183,10 +1187,10 @@ impl MemoryBanks for MemoryMapping<'_> {
                     v
                 } else if address < 0x1ff {
                     // "high ram (HRAM)"
-                    self.management_bits[address as usize]
+                    self.state.management_bits[address as usize]
                 } else {
                     // "interrupt enable register"
-                    self.management_bits[address as usize]
+                    self.state.management_bits[address as usize]
                 }
             }
             other => {
@@ -1201,28 +1205,28 @@ impl MemoryBanks for MemoryMapping<'_> {
         } else if addr < 0x8000 {
             self.cart.store(addr, value)
         } else if addr < 0xa000 {
-            let offset = 0x2000 * (self.management_bits[VBK] as usize & 0b1);
-            self.vram[addr as usize - 0x8000 + offset] = value;
+            let offset = 0x2000 * (self.state.management_bits[VBK] as usize & 0b1);
+            self.state.vram[addr as usize - 0x8000 + offset] = value;
         } else if addr < 0xc000 {
             self.cart.store(addr, value)
         } else if addr < 0xd000 {
-            self.ram[addr as usize - 0xc000] = value;
+            self.state.ram[addr as usize - 0xc000] = value;
         } else if addr < 0xe000 {
-            let nr = self.management_bits[SVBK] as usize & 0b111;
+            let nr = self.state.management_bits[SVBK] as usize & 0b111;
             let nr = if nr == 0 {
                 1
             } else {
                 nr
             };
-            self.ram[(addr as usize - 0xd000) + nr * 0x1000] = value;
+            self.state.ram[(addr as usize - 0xd000) + nr * 0x1000] = value;
         } else if addr < 0xfe00 {
-            self.ram[addr as usize - 0xe000] = value;
+            self.state.ram[addr as usize - 0xe000] = value;
         } else if addr < 0xfea0 {
             // sprite attribute table
-            self.lcd.store(addr as u16 - 0xfe00, value);
+            self.state.lcd.store(addr as u16 - 0xfe00, value);
         } else if addr < 0xff00 {
             // "not usable"
-            self.management_bits[addr as usize - 0xfe00] = value;
+            self.state.management_bits[addr as usize - 0xfe00] = value;
         } else if addr < 0xff80 {
             // "i/o registers"
             if self.verbose {
@@ -1230,53 +1234,53 @@ impl MemoryBanks for MemoryMapping<'_> {
             }
             let reg = addr as usize - 0xfe00;
             if (reg >= APU_MIN_REG && reg <= APU_MAX_REG) || reg == PCM12 || reg == PCM34 {
-                self.apu.store(reg, value);
+                self.state.apu.store(reg, value);
             } else if reg == JOYP {
-                self.management_bits[reg] &= 0b1100_1111;
-                self.management_bits[reg] |= (value & 0b0011_0000);
+                self.state.management_bits[reg] &= 0b1100_1111;
+                self.state.management_bits[reg] |= (value & 0b0011_0000);
             } else if reg == KEY1 {
-                self.management_bits[reg] |= value & 0b1;
+                self.state.management_bits[reg] |= value & 0b1;
             } else if reg == LY {
                 // read-only register: discard the write
             } else if reg == VBK {
-                self.management_bits[reg] = value & 0b01;
+                self.state.management_bits[reg] = value & 0b01;
             } else if reg == BGPI {
-                self.management_bits[reg] = value;
+                self.state.management_bits[reg] = value;
             } else if reg == BGPD {
-                let idx = self.management_bits[BGPI] & 0x3f;
-                self.lcd.background_palettes_data[idx as usize] = value;
-                self.lcd.recompute_palette_cache();
-                if self.management_bits[BGPI] & 0x80 != 0 {
-                    self.management_bits[BGPI] = 0x80 | ((idx + 1) & 0x3f);
+                let idx = self.state.management_bits[BGPI] & 0x3f;
+                self.state.lcd.background_palettes_data[idx as usize] = value;
+                self.state.lcd.recompute_palette_cache();
+                if self.state.management_bits[BGPI] & 0x80 != 0 {
+                    self.state.management_bits[BGPI] = 0x80 | ((idx + 1) & 0x3f);
                 }
             } else if reg == OBPI {
-                self.management_bits[reg] = value;
+                self.state.management_bits[reg] = value;
             } else if reg == OBPD {
-                let idx = self.management_bits[OBPI] & 0x3f;
-                self.lcd.object_palettes_data[idx as usize] = value;
-                self.lcd.recompute_palette_cache();
-                if self.management_bits[OBPI] & 0x80 != 0 {
-                    self.management_bits[OBPI] = 0x80 | ((idx + 1) & 0x3f);
+                let idx = self.state.management_bits[OBPI] & 0x3f;
+                self.state.lcd.object_palettes_data[idx as usize] = value;
+                self.state.lcd.recompute_palette_cache();
+                if self.state.management_bits[OBPI] & 0x80 != 0 {
+                    self.state.management_bits[OBPI] = 0x80 | ((idx + 1) & 0x3f);
                 }
             } else if reg == OPRI {
-                self.management_bits[reg] = value;
+                self.state.management_bits[reg] = value;
             } else if reg == SVBK {
-                self.management_bits[reg] = value & 0b111;
+                self.state.management_bits[reg] = value & 0b111;
             } else if reg == IE {
                 if self.verbose {
                     eprintln!("setting IE=${:02x}", value);
                 }
-                self.management_bits[reg] = value;
+                self.state.management_bits[reg] = value;
             } else if reg == IF {
                 if self.verbose {
                     eprintln!("setting IF=${:02x}", value);
                 }
-                self.management_bits[reg] = value & 0x1f;
+                self.state.management_bits[reg] = value & 0x1f;
             } else if reg == LCDC {
                 if self.verbose {
                     eprintln!("setting LCDC=${:02x}", value);
                 }
-                self.lcd.set_lcdc(value);
+                self.state.lcd.set_lcdc(value);
             } else if reg == DMA {
                 let source = value as u16 * 0x100;
 //                eprintln!("doing DMA from {:04x})", source);
@@ -1285,19 +1289,19 @@ impl MemoryBanks for MemoryMapping<'_> {
                     self.store(0xfe00 + i, b);
                 }
             } else if reg == KEY0 {
-                self.management_bits[reg] = value;
+                self.state.management_bits[reg] = value;
             } else if reg == HDMA1 {
-                self.management_bits[reg] = value;
+                self.state.management_bits[reg] = value;
             } else if reg == HDMA2 {
-                self.management_bits[reg] = value;
+                self.state.management_bits[reg] = value;
             } else if reg == HDMA3 {
-                self.management_bits[reg] = value;
+                self.state.management_bits[reg] = value;
             } else if reg == HDMA4 {
-                self.management_bits[reg] = value;
+                self.state.management_bits[reg] = value;
             } else if reg == HDMA5 {
-                let source = (self.management_bits[HDMA1] as u16) << 8 | ((self.management_bits[HDMA2] as u16 & 0xf0));
-                let dest = ((((self.management_bits[HDMA3] as u16) << 8) & 0x1fff) | 0x8000) | ((self.management_bits[HDMA4] as u16 & 0xf0));
-                let size = self.management_bits[HDMA5] as u16;
+                let source = (self.state.management_bits[HDMA1] as u16) << 8 | ((self.state.management_bits[HDMA2] as u16 & 0xf0));
+                let dest = ((((self.state.management_bits[HDMA3] as u16) << 8) & 0x1fff) | 0x8000) | ((self.state.management_bits[HDMA4] as u16 & 0xf0));
+                let size = self.state.management_bits[HDMA5] as u16;
                 if size > 0x7f {
                     panic!("TODO: hblank dma");
                 }
@@ -1305,45 +1309,45 @@ impl MemoryBanks for MemoryMapping<'_> {
                 for i in 0..size {
                     self.store(dest + i, self.load(source + i));
                 }
-                self.management_bits[reg] = 0;
+                self.state.management_bits[reg] = 0;
             } else if reg == SCX {
 //                eprintln!("SCX set to {:02x}", value);
-                self.management_bits[reg] = value;
+                self.state.management_bits[reg] = value;
             } else if reg == TAC {
                 if value & 0xf8 != 0 {
                     eprintln!("bogus TAC value: {:02x}", value);
                 }
 //                eprintln!("TAC set to {:02x}", value);
-                self.management_bits[reg] = value;
+                self.state.management_bits[reg] = value;
             } else if reg == BGP {
-                self.management_bits[reg] = value;
+                self.state.management_bits[reg] = value;
             } else if reg == WX {
-                self.management_bits[reg] = value;
+                self.state.management_bits[reg] = value;
             } else if reg == WY {
-                self.management_bits[reg] = value;
+                self.state.management_bits[reg] = value;
             } else if reg == OBP0 {
-                self.management_bits[reg] = value & 0b1111_1100;
+                self.state.management_bits[reg] = value & 0b1111_1100;
             } else if reg == OBP1 {
-                self.management_bits[reg] = value & 0b1111_1100;
+                self.state.management_bits[reg] = value & 0b1111_1100;
             } else if reg == BANK {
-                self.management_bits[reg] = value;
+                self.state.management_bits[reg] = value;
             } else if reg == STAT {
-                self.management_bits[reg] = value & 0b1111_0000;
+                self.state.management_bits[reg] = value & 0b1111_0000;
             } else if reg == LYC {
 //                eprintln!("setting LYC to {:02x}", value);
-                self.management_bits[reg] = value;
+                self.state.management_bits[reg] = value;
             } else if reg == SCY {
-                self.management_bits[reg] = value;
+                self.state.management_bits[reg] = value;
             } else if reg == SCX {
-                self.management_bits[reg] = value;
+                self.state.management_bits[reg] = value;
             } else if reg == DIV {
-                self.management_bits[reg] = value;
+                self.state.management_bits[reg] = value;
             } else if reg == TIMA {
-                self.management_bits[reg] = value;
+                self.state.management_bits[reg] = value;
             } else if reg == TMA {
-                self.management_bits[reg] = value;
+                self.state.management_bits[reg] = value;
             } else if reg == TAC {
-                self.management_bits[reg] = value;
+                self.state.management_bits[reg] = value;
             } else if reg == SB {
                 if self.verbose {
                     eprintln!("serial transfer unhandled");
@@ -1361,14 +1365,14 @@ impl MemoryBanks for MemoryMapping<'_> {
                 // anyway, writes are discarded.
             } else {
                         panic!("unhandled write {:04x}", reg);
-                self.management_bits[reg] = value;
+                self.state.management_bits[reg] = value;
             }
         } else if addr < 0xffff {
             // "high ram (HRAM)"
-            self.management_bits[addr as usize - 0xfe00] = value;
+            self.state.management_bits[addr as usize - 0xfe00] = value;
         } else {
             // "interrupt enable register"
-            self.management_bits[addr as usize - 0xfe00] = value;
+            self.state.management_bits[addr as usize - 0xfe00] = value;
         }
     }
 }
@@ -1620,17 +1624,20 @@ impl GBC {
     fn new(boot_rom: GBCCart) -> Self {
         Self {
             frame_times: Vec::new(),
+            state: GBCState {
+                lcd: Lcd::new(),
+                apu: Apu::new(),
+                ram: [0u8; 32 * 1024],
+                vram: [0u8; 16 * 1024],
+                management_bits: [0u8; 0x200],
+            },
             cpu: Cpu::new(),
-            lcd: Lcd::new(),
             sprite_debug_panel: Box::new([0; 4 * 182 * 42]),
-            apu: Apu::new(),
+            active_rom: boot_rom,
             cart: GBCCart::empty(),
+            boot_rom: GBCCart::empty(),
             audio_sink: None,
-            boot_rom,
             in_boot: true,
-            ram: [0u8; 32 * 1024],
-            vram: [0u8; 16 * 1024],
-            management_bits: [0u8; 0x200],
             clock: 0,
             div_apu: 0,
             next_div_tick: 256,
@@ -1645,17 +1652,27 @@ impl GBC {
 
     fn reset(&mut self) {
         self.cpu = Cpu::new();
-        self.lcd = Lcd::new();
+        self.state.lcd = Lcd::new();
         self.sprite_debug_panel = Box::new([0; 4 * 182 * 42]);
-        self.apu = Apu::new();
+        self.state.apu = Apu::new();
+
+        // figure out which rom is which, reset them, and return state to fresh boot..
+        if !self.in_boot {
+            std::mem::swap(&mut self.cart, &mut self.active_rom);
+            std::mem::swap(&mut self.active_rom, &mut self.boot_rom);
+        } else {
+            // boot cart is the active one. leave it as-is..
+        };
+        self.boot_rom.reset();
         self.cart.reset();
+        self.active_rom.reset();
+        self.in_boot = true;
+
         // DO NOT clear the audio sink out
         // self.audio_sink = None;
-        self.boot_rom.reset();
-        self.in_boot = true;
-        self.ram = [0u8; 32 * 1024];
-        self.vram = [0u8; 16 * 1024];
-        self.management_bits = [0u8; 0x200];
+        self.state.ram = [0u8; 32 * 1024];
+        self.state.vram = [0u8; 16 * 1024];
+        self.state.management_bits = [0u8; 0x200];
         self.clock = 0;
         self.div_apu = 0;
         self.next_div_tick = 256;
@@ -1687,10 +1704,10 @@ impl GBC {
                 self.input_actions |= 0b0000_0001;
             },
             Input::BankToggleBackground => {
-                self.lcd.toggle_background_sprite_bank ^= true;
+                self.state.lcd.toggle_background_sprite_bank ^= true;
             }
             Input::BankToggleOam => {
-                self.lcd.toggle_oam_sprite_bank ^= true;
+                self.state.lcd.toggle_oam_sprite_bank ^= true;
             }
             Input::VerboseToggle => {
                 self.cpu.verbose ^= true;
@@ -1737,7 +1754,7 @@ impl GBC {
         let _div_ticks = if div_overshoot > 0 {
             // must advance div (now figure out by how much...)
             let div_amount = (div_overshoot as u64 + 255) / 256;
-            self.management_bits[DIV] = self.management_bits[DIV].wrapping_add(div_amount as u8);
+            self.state.management_bits[DIV] = self.state.management_bits[DIV].wrapping_add(div_amount as u8);
             self.next_div_tick = self.next_div_tick.wrapping_add(div_amount * 256);
             div_amount
         } else {
@@ -1760,21 +1777,21 @@ impl GBC {
             0
         };
 
-        if self.management_bits[TAC] & 0b0100 != 0 {
-//            let tac_div = [1024, 16, 64, 256][self.management_bits[TAC] as usize & 0b11];
+        if self.state.management_bits[TAC] & 0b0100 != 0 {
+//            let tac_div = [1024, 16, 64, 256][self.state.management_bits[TAC] as usize & 0b11];
 //            let tima_increment = (new_clock / tac_div) - (self.clock / tac_div);
-            let tac_scale = [10, 4, 6, 8][self.management_bits[TAC] as usize & 0b11];
+            let tac_scale = [10, 4, 6, 8][self.state.management_bits[TAC] as usize & 0b11];
             let tima_increment = (new_clock >> tac_scale) - (self.clock >> tac_scale);
 
-            let tima = self.management_bits[TIMA] as u16;
+            let tima = self.state.management_bits[TIMA] as u16;
             let new_tima = tima + tima_increment as u16;
             if new_tima > 0xff {
-                self.management_bits[IF] |= 0b00100;
+                self.state.management_bits[IF] |= 0b00100;
                 // TODO: according to SameBoy it is four cycles to reload TIMA, during which period
                 // TIMA should be 0
-                self.management_bits[TIMA] = self.management_bits[TMA];
+                self.state.management_bits[TIMA] = self.state.management_bits[TMA];
             } else {
-                self.management_bits[TIMA] = new_tima as u8;
+                self.state.management_bits[TIMA] = new_tima as u8;
             }
         }
 
@@ -1787,53 +1804,48 @@ impl GBC {
             clocks
         };
 
-        let (vblank_int, stat_int) = self.lcd.advance_clock(&self.vram, self.management_bits[STAT], self.management_bits[LYC], system_clocks, self.management_bits[SCX], self.management_bits[SCY], self.management_bits[WX], self.management_bits[WY]);
+        let (vblank_int, stat_int) = self.state.lcd.advance_clock(&self.state.vram, self.state.management_bits[STAT], self.state.management_bits[LYC], system_clocks, self.state.management_bits[SCX], self.state.management_bits[SCY], self.state.management_bits[WX], self.state.management_bits[WY]);
         if vblank_int {
             if self.show_sprite_debug_panel {
-                self.lcd.render_sprite_debug(&self.vram, &mut self.sprite_debug_panel);
+                self.state.lcd.render_sprite_debug(&self.state.vram, &mut self.sprite_debug_panel);
             }
 //            eprintln!("fire vblank interrupt at clock {}", self.clock);
-            self.management_bits[IF] |= 0b00001;
+            self.state.management_bits[IF] |= 0b00001;
         }
         if stat_int {
-//            eprintln!("firing STAT lyc={:02x}, ly={:02x}", self.management_bits[LYC], self.lcd.ly);
-            self.management_bits[IF] |= 0b00010;
+//            eprintln!("firing STAT lyc={:02x}, ly={:02x}", self.state.management_bits[LYC], self.lcd.ly);
+            self.state.management_bits[IF] |= 0b00010;
         }
-        self.management_bits[STAT] &= 0b1111_1100;
-        self.management_bits[STAT] |= self.lcd.mode;
-        self.management_bits[LY] = self.lcd.ly;
+// do not join lcd.mode and STAT eagerly, these are now fixed up on read
+//        self.state.management_bits[STAT] &= 0b1111_1100;
+//        self.state.management_bits[STAT] |= self.lcd.mode;
+// do not set LY explicitly, it is now set to read from self.lcd.ly
+//        self.state.management_bits[LY] = self.lcd.ly;
         // for gameboy doctor
-//        self.management_bits[LY] = 0x90;
-        self.apu.advance_clock(self.audio_sink.as_ref().clone(), system_clocks, self.turbo);
+//        self.state.management_bits[LY] = 0x90;
+        self.state.apu.advance_clock(self.audio_sink.as_ref().clone(), system_clocks, self.turbo);
 
         self.clock = new_clock;
     }
 
     fn run(&mut self) -> u64 {
-        let mut res = self.management_bits[JOYP] & 0b0011_0000;
-        if self.management_bits[JOYP] & 0b0001_0000 == 0 {
+        let mut res = self.state.management_bits[JOYP] & 0b0011_0000;
+        if self.state.management_bits[JOYP] & 0b0001_0000 == 0 {
             res |= self.input_directions ^ 0b0000_1111;
         }
-        if self.management_bits[JOYP] & 0b0010_0000 == 0 {
+        if self.state.management_bits[JOYP] & 0b0010_0000 == 0 {
             res |= self.input_actions ^ 0b0000_1111;
         }
-        self.management_bits[JOYP] = res;
+        self.state.management_bits[JOYP] = res;
 
         let mut mem_map = MemoryMapping {
-            cart: if self.in_boot {
-                self.boot_rom.mapper.as_mut()
-            } else {
-                self.cart.mapper.as_mut()
-            },
-            ram: &mut self.ram,
-            vram: &mut self.vram,
-            lcd: &mut self.lcd,
-            apu: &mut self.apu,
-            management_bits: &mut self.management_bits,
+            cart: self.active_rom
+                .mapper.as_mut(),
+            state: &mut self.state,
             verbose: self.verbose,
-            dma_requested: false,
         };
 
+        /*
         if self.verbose {
 //        if true {
             let mut reader = BankReader::read_at(&mut mem_map, self.cpu.pc);
@@ -1850,9 +1862,11 @@ impl GBC {
 //            eprintln!("ram (first 512b): {:?}", &mem_map.ram[0..512]);
 //            eprintln!("  {:?}", instr);
         }
+        */
 
         let pc_before = self.cpu.pc;
         let clocks = self.cpu.step(&mut mem_map);
+        /*
         if !self.in_boot && false {
             eprintln!(
                 "A:{:02X} F:{:02X} B:{:02X} C:{:02X} D:{:02X} E:{:02X} H:{:02X} L:{:02X} SP:{:04X} PC:{:04X} PCMEM:{:02X},{:02X},{:02X},{:02X}",
@@ -1872,9 +1886,12 @@ impl GBC {
                 mem_map.load(self.cpu.pc + 3),
             );
         }
+        */
+        /*
         if self.cpu.sp >= 0xfe00 && self.cpu.sp < 0xff80 {
             panic!("nonsense sp: ${:04x}", self.cpu.sp);
         }
+        */
         /*
         if pc_before == self.cpu.pc {
             panic!("loop detected");
@@ -1897,6 +1914,7 @@ impl GBC {
         }
         */
 
+        /*
         if self.verbose {
             eprintln!("clock: {}", self.clock);
             eprint!("{:?}", &self.cpu);
@@ -1913,14 +1931,17 @@ impl GBC {
                 }
             }
         }
+        */
 
         if self.in_boot {
             let boot_rom_disable = mem_map.load(0xff50);
             if boot_rom_disable != 0 {
-                eprintln!("boot rom complete, switching to cart");
+//                eprintln!("boot rom complete, switching to cart");
 //                self.verbose = true;
 //                self.cpu.verbose = true;
                 self.in_boot = false;
+                std::mem::swap(&mut self.active_rom, &mut self.boot_rom);
+                std::mem::swap(&mut self.cart, &mut self.active_rom);
             }
         }
 
@@ -2372,7 +2393,7 @@ impl MemoryBanks for MBC3 {
             let addr = addr as usize - 0x4000 + bank * 0x4000;
             MemoryAddress::rom(addr as u32)
         } else if addr < 0xa000 {
-            eprintln!("bad cart access at {:#04x}", addr);
+            // eprintln!("bad cart access at {:#04x}", addr);
             MemoryAddress::rom(0)
         } else if addr < 0xc000 {
             let bank = self.ram_bank as usize;
@@ -2386,7 +2407,7 @@ impl MemoryBanks for MBC3 {
                 }
             }
         } else {
-            eprintln!("bad cart access at {:#04x}", addr);
+            // eprintln!("bad cart access at {:#04x}", addr);
             MemoryAddress::rom(0)
         }
     }
@@ -2487,7 +2508,7 @@ impl MemoryBanks for MBC5 {
             let addr = addr as usize - 0x4000 + bank * 0x4000;
             MemoryAddress::rom(addr as u32)
         } else if addr < 0xa000 {
-            eprintln!("bad cart access at {:#04x}", addr);
+            // eprintln!("bad cart access at {:#04x}", addr);
             MemoryAddress::rom(0)
         } else if addr < 0xc000 {
             let bank = self.ram_bank as usize;
@@ -2495,7 +2516,7 @@ impl MemoryBanks for MBC5 {
             let addr = addr as usize - 0xa000 + bank * 0x2000;
             MemoryAddress::ram(addr as u32)
         } else {
-            eprintln!("bad cart access at {:#04x}", addr);
+            // eprintln!("bad cart access at {:#04x}", addr);
             MemoryAddress::rom(0)
         }
     }
@@ -2627,21 +2648,19 @@ mod test {
             ram: vec![0u8; 32 * 1024].into_boxed_slice(),
             save_file: None,
         };
-        let mut wram = [0u8; 32 * 1024];
-        let mut vram = [0u8; 16 * 1024];
-        let mut lcd = crate::Lcd::new();
-        let mut apu = crate::Apu::new();
-        let mut management_bits = [0u8; 0x200];
+
+        let mut state = GBCState {
+            ram: [0u8; 32 * 1024],
+            vram: [0u8; 16 * 1024],
+            lcd: crate::Lcd::new(),
+            apu: crate::Apu::new(),
+            management_bits: [0u8; 0x200],
+        };
 
         let mut memory = MemoryMapping {
             cart: &mut rom,
-            ram: &mut wram,
-            vram: &mut vram,
-            lcd: &mut lcd,
-            apu: &mut apu,
-            management_bits: &mut management_bits,
+            state: &mut state,
             verbose: false,
-            dma_requested: false,
         };
 
         f(memory)

@@ -45,13 +45,13 @@ impl miniquad::EventHandler for GBCPainter {
                 }
                 ui.label(format!("fps: {}", self.fps_tracker.len()));
                 ui.label(format!("vblank/s(?): {}", gb.frame_times.len()));
-                ui.label(format!("scy: {}", gb.management_bits[SCY]));
-                ui.label(format!("scx: {}", gb.management_bits[SCX]));
-                ui.label(format!("ly: {}", gb.management_bits[LY]));
-                ui.label(format!("lyc: {}", gb.management_bits[LYC]));
-                ui.label(format!("lcdc: {}", gb.lcd.lcdc));
-                ui.label(format!("ie: {}", gb.management_bits[IE]));
-                ui.label(format!("if: {}", gb.management_bits[IF]));
+                ui.label(format!("scy: {}", gb.state.management_bits[SCY]));
+                ui.label(format!("scx: {}", gb.state.management_bits[SCX]));
+                ui.label(format!("ly: {}", gb.state.management_bits[LY]));
+                ui.label(format!("lyc: {}", gb.state.management_bits[LYC]));
+                ui.label(format!("lcdc: {}", gb.state.lcd.lcdc));
+                ui.label(format!("ie: {}", gb.state.management_bits[IE]));
+                ui.label(format!("if: {}", gb.state.management_bits[IF]));
                 ui.label(format!("pc: {:04x}", gb.cpu.pc));
             });
             gb.clear_input();
@@ -102,7 +102,7 @@ impl miniquad::EventHandler for GBCPainter {
         let mut addr = 0;
         for y in 0..SCREEN_HEIGHT {
             for x in 0..SCREEN_WIDTH {
-                let next_px = &gb.lcd.display[addr * 4..][..4];
+                let next_px = &gb.state.lcd.display[addr * 4..][..4];
                 pixels.extend_from_slice(next_px);
                 addr += 1;
             }

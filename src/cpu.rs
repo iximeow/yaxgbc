@@ -200,8 +200,8 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
             if self.cpu.verbose {
 //                eprintln!("switching speed mode to {}", self.cpu.speed_mode);
             }
-            self.storage.management_bits[KEY1] &= 0b0111_1111;
-            self.storage.management_bits[KEY1] |= self.cpu.speed_mode << 7;
+            self.storage.state.management_bits[KEY1] &= 0b0111_1111;
+            self.storage.state.management_bits[KEY1] |= self.cpu.speed_mode << 7;
         } else {
             eprintln!("stopping");
             panic!("");
@@ -1267,7 +1267,7 @@ impl Cpu {
             // otherwise, interrupts are enabled, and if none have fired we will remain in
             // low-power mode (advancing by one clock as the rest of the machine still has to
             // operate).
-            let interrupts = memory.management_bits[crate::IF as usize] & memory.management_bits[crate::IE as usize] & 0x1f;
+            let interrupts = memory.state.management_bits[crate::IF as usize] & memory.state.management_bits[crate::IE as usize] & 0x1f;
             if interrupts != 0 {
                 // have an interrupt, update state appropriately and wake from halt
                 self.halted = false;
@@ -1279,7 +1279,7 @@ impl Cpu {
 //                eprintln!("interrupt {}", interrupt_nr);
 
                 // unset the bit for the interrupt we're about to service
-                memory.management_bits[crate::IF as usize] ^= 1 << interrupt_nr;
+                memory.state.management_bits[crate::IF as usize] ^= 1 << interrupt_nr;
 
                 let interrupt_addr = 0x40 + (8 * interrupt_nr) as u16;
                 self.trace_int(memory, self.pc, interrupt_addr, 1 << interrupt_nr);
@@ -1335,13 +1335,14 @@ mod test {
         let mut apu = crate::Apu::new();
         let mut memory = MemoryMapping {
             cart: &mut rom,
-            ram: &mut [],
-            vram: &mut [],
-            lcd: &mut lcd,
-            apu: &mut apu,
-            management_bits: &mut [0u8; 512],
+            state: &mut crate::GBCState {
+                ram: [0; 32768],
+                vram: [0; 16384],
+                lcd: lcd,
+                apu: apu,
+                management_bits: [0u8; 512],
+            },
             verbose: false,
-            dma_requested: false,
         };
         cpu.step(&mut memory);
     }
