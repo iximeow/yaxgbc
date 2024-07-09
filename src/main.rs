@@ -28,6 +28,11 @@ struct Args {
 }
 
 fn main() {
+    println!("gbc: {}", size_of::<GBC>());
+    println!("lcd: {}", size_of::<Lcd>());
+    println!("apu: {}", size_of::<Apu>());
+    println!("sink: {}", size_of::<rodio::Sink>());
+    println!("memory mapping: {}", size_of::<MemoryMapping>());
     let args = Args::parse();
 
     let rom = std::fs::read(&args.file).unwrap();
@@ -311,7 +316,7 @@ impl TileAttributes {
     }
 
     fn priority(&self) -> bool {
-        (self.0 & 0b1000_000) != 0
+        (self.0 & 0b1000_0000) != 0
     }
 }
 
