@@ -208,14 +208,19 @@ fn main() {
                 // audio buffers are 256 samples, so each buffer we're behind represents 0.58ms of
                 // playback we're behind on. call <5ms delay fine. at 100ms of delay, though, we'll
                 // add a full two milliseconds to every frame to try catching up.
-                let extra_sleep_micros = if apu_queue_depth < 4 {
+                //
+                // if the apu queue is about to be empty we're sleeping too much, so run a little
+                // ahead and try to keep some semblance of a buffer..
+                let extra_sleep_micros = if apu_queue_depth < 1 {
+                    -100i64
+                } else if apu_queue_depth < 10 {
                     0
                 } else if apu_queue_depth < 30 {
-                    (5000 * apu_queue_depth) / 30
+                    (5000 * apu_queue_depth as i64) / 30
                 } else {
                     5000
                 };
-                frame_target = SystemTime::now() + (Duration::from_micros(16666 - last_overshoot as u64 + extra_sleep_micros));
+                frame_target = SystemTime::now() + (Duration::from_micros((16666 - last_overshoot as i64 + extra_sleep_micros) as u64));
             } else {
                 eprintln!("yike, by {} micros", now.duration_since(frame_target).unwrap().as_micros());
                 frame_target = now + Duration::from_millis(16);
