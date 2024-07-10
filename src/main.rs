@@ -288,8 +288,8 @@ impl OamAttributes {
         (self.0 & 0b0010_0000) != 0
     }
 
-    fn palette_number(&self) -> u16 {
-        ((self.0 & 0b0001_0000) >> 4) as u16
+    fn palette_number(&self) -> u8 {
+        ((self.0 & 0b0001_0000) >> 4) as u8
     }
 
     fn vram_bank(&self) -> u16 {
