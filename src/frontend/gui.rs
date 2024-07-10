@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt::Write;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,6 +23,41 @@ struct GBCPainter {
     gb_state: Arc<Mutex<GBC>>,
     egui: egui_miniquad::EguiMq,
     fps_tracker: Vec<SystemTime>,
+    input_debounce: Arc<Mutex<InputDebounce>>,
+}
+
+struct InputDebounce {
+    state: HashMap<crate::Input, bool>,
+}
+
+impl InputDebounce {
+    fn new() -> Self {
+        InputDebounce {
+            state: HashMap::new()
+        }
+    }
+
+    fn debounce(&mut self, input: crate::Input, state: bool) -> bool {
+        if !state {
+            self.state.insert(input, false);
+            false
+        } else {
+            // if `state`, the input is pressed. we want to trigger only when we notice the input
+            // is pressed, not when it is held.
+            //
+            // so, if it was already held, ignore this input and indicate the toggle has already
+            // occurred. otherwise, remember that we have reported the input so we reject it in the
+            // future.
+            //
+            // when the key is released, we'll update the map to forget this input.
+            if !*self.state.entry(input).or_default() {
+                self.state.insert(input, true);
+                true
+            } else {
+                false
+            }
+        }
+    }
 }
 
 impl miniquad::EventHandler for GBCPainter {
@@ -37,6 +73,8 @@ impl miniquad::EventHandler for GBCPainter {
         let dpi_scale = ctx.dpi_scale();
 
         let mut gb = self.gb_state.lock().unwrap();
+
+        let debounce_ref = Arc::clone(&self.input_debounce);
 
         self.egui.run(ctx, |_miniquad_ctx, egui_ctx| {
             egui::Window::new("aaa").show(egui_ctx, |ui| {
@@ -55,19 +93,20 @@ impl miniquad::EventHandler for GBCPainter {
                 ui.label(format!("pc: {:04x}", gb.cpu.pc));
             });
             gb.clear_input();
+            let mut debounce_ref = debounce_ref.lock().unwrap();
             if egui_ctx.input(|i| i.key_down(egui::Key::Q)) {
                 gb.do_input(crate::Input::Start);
             }
             if egui_ctx.input(|i| i.key_down(egui::Key::E)) {
                 gb.do_input(crate::Input::Select);
             }
-            if egui_ctx.input(|i| i.key_down(egui::Key::O)) {
+            if debounce_ref.debounce(crate::Input::BankToggleBackground, egui_ctx.input(|i| i.key_down(egui::Key::O))) {
                 gb.do_input(crate::Input::BankToggleBackground);
             }
-            if egui_ctx.input(|i| i.key_down(egui::Key::P)) {
+            if debounce_ref.debounce(crate::Input::BankToggleOam, egui_ctx.input(|i| i.key_down(egui::Key::P))) {
                 gb.do_input(crate::Input::BankToggleOam);
             }
-            if egui_ctx.input(|i| i.key_down(egui::Key::V)) {
+            if debounce_ref.debounce(crate::Input::VerboseToggle, egui_ctx.input(|i| i.key_down(egui::Key::V))) {
                 gb.do_input(crate::Input::VerboseToggle);
             }
             if egui_ctx.input(|i| i.key_down(egui::Key::Z)) {
@@ -88,13 +127,13 @@ impl miniquad::EventHandler for GBCPainter {
             if egui_ctx.input(|i| i.key_down(egui::Key::ArrowDown)) {
                 gb.do_input(crate::Input::Down);
             }
-            if egui_ctx.input(|i| i.key_down(egui::Key::T)) {
+            if debounce_ref.debounce(crate::Input::RenderSpriteDebugPanelToggle, egui_ctx.input(|i| i.key_down(egui::Key::T))) {
                 gb.do_input(crate::Input::RenderSpriteDebugPanelToggle);
             }
-            if egui_ctx.input(|i| i.key_down(egui::Key::L)) {
+            if debounce_ref.debounce(crate::Input::Reset, egui_ctx.input(|i| i.key_down(egui::Key::L))) {
                 gb.do_input(crate::Input::Reset);
             }
-            if egui_ctx.input(|i| i.key_down(egui::Key::Space)) {
+            if debounce_ref.debounce(crate::Input::Turbo, egui_ctx.input(|i| i.key_down(egui::Key::Space))) {
                 gb.do_input(crate::Input::Turbo);
             }
         });
@@ -362,6 +401,7 @@ pub(crate) fn do_ui(gb_state: Arc<Mutex<GBC>>) {
             gb_state,
             egui: egui_miniquad::EguiMq::new(ctx),
             fps_tracker: Vec::new(),
+            input_debounce: Arc::new(Mutex::new(InputDebounce::new())),
         })
     });
     /*
