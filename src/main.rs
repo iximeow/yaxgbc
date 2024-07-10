@@ -230,6 +230,8 @@ struct Lcd {
     dmg_compat: bool,
     lcdc: u8,
     ly: u8,
+    window_y: u8,
+    window_visible: u8,
     lcd_clock: u64,
     current_line_start: u64,
     current_draw_start: u64,
@@ -255,15 +257,23 @@ struct Lcd {
     tile_debug_base: u8,
 }
 
-#[derive(Copy, Clone, Default, PartialEq, Debug)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 struct Pixel {
     rgb: [u8; 4],
     pixel: u8,
     bg_priority: bool,
-    priority: bool,
-    // pointless field, but having implicit padding can result in poor codegen for array
-    // initializers, see https://github.com/rust-lang/rust/issues/122274
-    _pad: u8,
+    oam_pri: u8,
+}
+
+impl Default for Pixel {
+    fn default() -> Self {
+        Self {
+            rgb: [0u8; 4],
+            pixel: 0,
+            bg_priority: false,
+            oam_pri: 255
+        }
+    }
 }
 
 struct OamItem {
@@ -346,6 +356,8 @@ impl Lcd {
             dmg_compat: false,
             lcdc: 0,
             ly: 0,
+            window_y: 0,
+            window_visible: 0,
             lcd_clock: 0,
             current_line_start: 0,
             current_draw_start: 0,
@@ -737,6 +749,7 @@ impl Lcd {
             */
             self.current_draw_start += (screen_time / Self::SCREEN_TIME) * Self::SCREEN_TIME;
             self.ly = 0;
+            self.window_y = 0;
             // fire LYC=LY
             if self.ly == lyc && (lcd_stat & 0b0100_0000 != 0) {
 //                eprintln!("firing lyc=ly at ly={}", self.ly);
@@ -758,19 +771,53 @@ impl Lcd {
                 for px in 0..(self.curr_background_pixel as usize) {
                     assert!(self.curr_background_pixel == 160);
                     let addr = (self.ly as usize * 160 + px) * 4;
-                    if !self.dmg_compat || (self.dmg_compat && self.lcdc & 1 == 1) {
-                        self.display[addr..][..4].copy_from_slice(&self.background_pixels[px].rgb[..]);
-                    }
-                    if self.oam_pixels[px].pixel != 0 && (!(self.oam_pixels[px].bg_priority && self.background_pixels[px].pixel != 0)) {
-                        self.display[addr..][..4].copy_from_slice(&self.oam_pixels[px].rgb[..]);
-                    }
+                    let px_rgba = if self.dmg_compat {
+                        if self.lcdc & 1 == 0 {
+                            if self.oam_pixels[px].pixel != 0 {
+                                &self.oam_pixels[px].rgb[..]
+                            } else {
+                                &[0xff, 0xff, 0xff, 0xff]
+                            }
+                        } else {
+                            if self.oam_pixels[px].bg_priority && self.background_pixels[px].pixel != 0 {
+                                &self.background_pixels[px].rgb[..]
+                            } else if self.oam_pixels[px].pixel != 0 {
+                                &self.oam_pixels[px].rgb[..]
+                            } else {
+                                &self.background_pixels[px].rgb[..]
+                            }
+                        }
+                    } else {
+                        let from_oam = if self.lcdc & 1 == 0 {
+                            true
+                        } else {
+                            if (self.oam_pixels[px].bg_priority || self.background_pixels[px].bg_priority) {
+                                self.background_pixels[px].pixel == 0
+                            } else {
+                                true
+                            }
+                        };
+                        let px_rgba = if from_oam && self.oam_pixels[px].pixel != 0 {
+                            &self.oam_pixels[px].rgb[..]
+                        } else {
+                            &self.background_pixels[px].rgb[..]
+                        };
+                        px_rgba
+                    };
+                    self.display[addr..][..4].copy_from_slice(px_rgba);
                 }
                 self.curr_background_pixel = 0;
                 self.oam_pixels = [Pixel::default(); 160];
             }
 
             self.current_line_start += (line_time / Self::LINE_TIME) * Self::LINE_TIME;
+            if self.window_visible == 0b11 {
+                self.window_y += 1;
+            }
             self.ly += 1;
+            if self.ly >= wy {
+                self.window_visible = 0b01;
+            }
 
             // fire LYC=LY
             if self.ly == lyc && (lcd_stat & 0b0100_0000 != 0) {
@@ -942,13 +989,29 @@ impl Lcd {
                                 let px = COLORS[(px as usize) % COLORS.len()].wrapping_mul(item.x as u32 + y_addr as u32);
                                 */
 
-                                self.oam_pixels[x_addr as usize] = Pixel {
-                                    pixel: px,
-                                    rgb,
-                                    bg_priority: item.oam_attrs.bg_priority(),
-                                    priority: false,
-                                    _pad: 0,
+                                let can_overwrite = if !self.dmg_compat {
+                                    // is oam_pri unset? then we are the first oam item to be drawn
+                                    // on this pixel and have highest priority. we will set oam_pri
+                                    // and prevent future items from overwriting us.
+                                    self.oam_pixels[x_addr as usize].oam_pri == 255
+                                } else {
+                                    // oam_pri is initialized to an impossibly high value: first
+                                    // write always wins, later writes depend on oam x-value...
+                                    item.x <= self.oam_pixels[x_addr as usize].oam_pri
                                 };
+
+                                if can_overwrite {
+                                    self.oam_pixels[x_addr as usize] = Pixel {
+                                        pixel: px,
+                                        rgb,
+                                        bg_priority: item.oam_attrs.bg_priority(),
+                                        oam_pri: if !self.dmg_compat {
+                                            1
+                                        } else {
+                                            item.x
+                                        }
+                                    };
+                                }
 //                            } else {
 //                                self.oam_pixels[x_addr as usize] = Some(0xff0000);
                             }
@@ -969,8 +1032,12 @@ impl Lcd {
                     // window on this line.
                     // TODO: handle window ly separately given the window might not always be
                     // visible..?
-                    let window_y = if self.window_enable() {
-                        self.ly.checked_sub(wy)
+                    let window_y = if self.window_enable() && wx <= 166 {
+                        if self.ly >= wy {
+                            Some(self.window_y)
+                        } else {
+                            None
+                        }
                     } else {
                         // and if the window is not enabled, `None` here bypasses later logic
                         None
@@ -979,11 +1046,13 @@ impl Lcd {
                         ((window_y / 8) as u16, (window_y as u16 % 8))
                     });
                     for i in 0..160u8 {
-                        let (line_x, tile_data, attributes) = window_coords.and_then(|(window_y, window_y_offset)| {
+                        let (line_x, tile_data, mut attributes) = window_coords.and_then(|(window_y, window_y_offset)| {
                             if i + 7 < wx {
                                 // the window y-line was visible, but still too far left to draw
                                 // it.
                                 return None;
+                            } else {
+                                self.window_visible |= 0b10;
                             }
 
                             let window_x = i - wx + 7;
@@ -1034,8 +1103,7 @@ impl Lcd {
                             pixel: px,
                             rgb,
                             bg_priority: attributes.priority(),
-                            priority: true,
-                            _pad: 0,
+                            oam_pri: 0,
                         };
 
                         self.background_pixels[self.curr_background_pixel as usize] = px;
