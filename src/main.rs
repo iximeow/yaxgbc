@@ -733,7 +733,6 @@ impl Lcd {
     // interrupt.
 //    #[inline(never)]
     fn advance_clock(&mut self, vram: &[u8], lcd_stat: u8, lyc: u8, clocks: u64, scx: u8, scy: u8, wx: u8, wy: u8) -> (bool, bool) {
-        assert!(!self.dmg_compat);
         if !self.on() {
             return (false, false);
         }
@@ -779,18 +778,12 @@ impl Lcd {
                 for px in 0..(self.curr_background_pixel as usize) {
                     assert!(self.curr_background_pixel == 160);
                     let addr = (self.ly as usize * 160 + px) * 4;
-                    /*
-                    self.display[addr..][..4].copy_from_slice(&self.background_pixels[px].rgb[..]);
-                    if self.oam_pixels[px].pixel != 0 && (!(self.oam_pixels[px].bg_priority && self.background_pixels[px].pixel != 0)) {
-                        self.display[addr..][..4].copy_from_slice(&self.oam_pixels[px].rgb[..]);
-                    }
-                    */
                     let px_rgba = if self.dmg_compat {
                         if self.lcdc & 1 == 0 {
                             if self.oam_pixels[px].pixel != 0 {
                                 &self.oam_pixels[px].rgb[..]
                             } else {
-                                &[0x0f, 0xff, 0x0f, 0xff]
+                                &[0xff, 0xff, 0xff, 0xff]
                             }
                         } else {
                             if self.oam_pixels[px].bg_priority && self.background_pixels[px].pixel != 0 {
