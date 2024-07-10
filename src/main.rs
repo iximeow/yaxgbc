@@ -81,9 +81,9 @@ fn main() {
         timer::run(tx)
     });
     */
-    /// safety: timeBeginPeriod can't actually cause unsoundness.
     #[cfg(target_os="windows")]
     {
+        // safety: timeBeginPeriod can't actually cause unsoundness.
         let time_res = unsafe { windows::Win32::Media::timeBeginPeriod(1) };
         if time_res != windows::Win32::Media::TIMERR_NOERROR {
             panic!("failed to set timeBeginPeriod: {}", time_res);

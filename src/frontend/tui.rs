@@ -3,6 +3,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::{STAT, SCX, SCY, IF, IE, GBC};
 
+// only not used because this vs gui is chosen at compile time rn
+#[allow(dead_code)]
 pub(crate) fn do_ui(gb_state: Arc<Mutex<GBC>>) {
     loop {
         let mut gb = gb_state.lock().unwrap();
@@ -72,11 +74,12 @@ pub(crate) fn do_ui(gb_state: Arc<Mutex<GBC>>) {
             write!(screen, "\n");
         }
         */
+        // ignore write errors...
         for i in 0..144 {
             for j in 0..160 {
-                write!(screen, "{}", [".", "+", "*", "#"][gb.state.lcd.display[(i * 160 + j) as usize] as usize]);
+                let _ = write!(screen, "{}", [".", "+", "*", "#"][gb.state.lcd.display[(i * 160 + j) as usize] as usize]);
             }
-            write!(screen, "\n");
+            let _ = write!(screen, "\n");
         }
         println!("{}", screen);
         std::mem::drop(gb);
