@@ -1764,6 +1764,7 @@ fn dump_mem_region(mem_map: &dyn MemoryBanks, start: u16, words: u16, width: u16
     }
 }
 
+#[derive(Eq, Hash, PartialEq, Copy, Clone)]
 enum Input {
     Start,
     Select,
