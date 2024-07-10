@@ -2192,11 +2192,11 @@ impl GBC {
 //                eprintln!("boot rom complete, switching to cart");
 //                self.verbose = true;
 //                self.cpu.verbose = true;
-                self.state.lcd.dmg_compat = !self.active_rom.cgb;
-                self.state.lcd.recompute_palette_cache();
                 self.in_boot = false;
                 std::mem::swap(&mut self.active_rom, &mut self.boot_rom);
                 std::mem::swap(&mut self.cart, &mut self.active_rom);
+                self.state.lcd.dmg_compat = !self.active_rom.cgb;
+                self.state.lcd.recompute_palette_cache();
             }
         }
 
