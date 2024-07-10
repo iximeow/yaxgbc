@@ -130,6 +130,9 @@ impl miniquad::EventHandler for GBCPainter {
             if debounce_ref.debounce(crate::Input::RenderSpriteDebugPanelToggle, egui_ctx.input(|i| i.key_down(egui::Key::T))) {
                 gb.do_input(crate::Input::RenderSpriteDebugPanelToggle);
             }
+            if debounce_ref.debounce(crate::Input::TraceIO, egui_ctx.input(|i| i.key_down(egui::Key::I))) {
+                gb.do_input(crate::Input::TraceIO);
+            }
             if debounce_ref.debounce(crate::Input::Reset, egui_ctx.input(|i| i.key_down(egui::Key::L))) {
                 gb.do_input(crate::Input::Reset);
             }

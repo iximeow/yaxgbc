@@ -995,6 +995,7 @@ struct GBC {
     input_directions: u8,
 //    audio: Rc<GBCAudio>,
     verbose: bool,
+    trace_io: bool,
     show_sprite_debug_panel: bool,
     turbo: bool,
 }
@@ -1003,11 +1004,12 @@ struct MemoryMapping<'system> {
     cart: &'system mut dyn MemoryBanks,
     state: &'system mut GBCState,
     verbose: bool,
+    trace_io: bool,
 }
 
 impl<'a> fmt::Debug for MemoryMapping<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "MemoryMapping {{ cart: {:?}, verbose: {}, .. }}", &self.cart, &self.verbose)
+        write!(f, "MemoryMapping {{ cart: {:?}, verbose: {}, trace_io: {}, .. }}", &self.cart, &self.verbose, &self.trace_io)
     }
 }
 
@@ -1099,6 +1101,9 @@ impl MemoryBanks for MemoryMapping<'_> {
                     // "not usable"
                     self.state.management_bits[address as usize]
                 } else if address < 0x180 {
+                    if self.verbose || self.trace_io {
+                        eprintln!("loading ${:3x}", address);
+                    }
                     let reg = address as usize;
                     let v = if (reg >= APU_MIN_REG && reg <= APU_MAX_REG) || reg == PCM12 || reg == PCM34 {
                         self.state.apu.load(reg)
@@ -1122,13 +1127,13 @@ impl MemoryBanks for MemoryMapping<'_> {
                         self.state.lcd.object_palettes_data[idx as usize]
                     } else if reg == IF {
                         let v = self.state.management_bits[reg];
-                        if self.verbose {
+                        if self.verbose || self.trace_io {
                             eprintln!("getting IF=${:02x}", v);
                         }
                         v
                     } else if reg == IE {
                         let v = self.state.management_bits[reg];
-                        if self.verbose {
+                        if self.verbose || self.trace_io {
                             eprintln!("getting IE=${:02x}", v);
                         }
                         v
@@ -1136,7 +1141,7 @@ impl MemoryBanks for MemoryMapping<'_> {
                         // self.state.management_bits[reg]
                         self.state.lcd.ly
                     } else if reg == LCDC {
-                        if self.verbose {
+                        if self.verbose || self.trace_io {
                             eprintln!("getting LCDC=${:02x}", self.state.lcd.lcdc);
                         }
                         self.state.lcd.lcdc
@@ -1184,7 +1189,7 @@ impl MemoryBanks for MemoryMapping<'_> {
                     } else {
                         //panic!("unhandled load {:04x}", reg);
                         let v = self.state.management_bits[reg];
-                        if self.verbose {
+                        if self.verbose || self.trace_io {
                             eprintln!("get ${:04x} (=${:02x})", address, v);
                         }
                         v
@@ -1234,7 +1239,7 @@ impl MemoryBanks for MemoryMapping<'_> {
             self.state.management_bits[addr as usize - 0xfe00] = value;
         } else if addr < 0xff80 {
             // "i/o registers"
-            if self.verbose {
+            if self.verbose || self.trace_io {
                 eprintln!("set ${:04x}=${:02x}", addr, value);
             }
             let reg = addr as usize - 0xfe00;
@@ -1621,6 +1626,7 @@ enum Input {
     VerboseToggle,
     Left, Right, Up, Down,
     RenderSpriteDebugPanelToggle,
+    TraceIO,
     Reset,
     Turbo,
 }
@@ -1650,6 +1656,7 @@ impl GBC {
             input_actions: 0,
             input_directions: 0,
             verbose: false,
+            trace_io: false,
             show_sprite_debug_panel: false,
             turbo: false,
         }
@@ -1732,6 +1739,9 @@ impl GBC {
             },
             Input::RenderSpriteDebugPanelToggle => {
                 self.show_sprite_debug_panel ^= true;
+            }
+            Input::TraceIO => {
+                self.trace_io ^= true;
             }
             Input::Turbo => {
                 self.turbo ^= true;
@@ -1848,6 +1858,7 @@ impl GBC {
                 .mapper.as_mut(),
             state: &mut self.state,
             verbose: self.verbose,
+            trace_io: self.trace_io,
         };
 
         /*
@@ -2666,6 +2677,7 @@ mod test {
             cart: &mut rom,
             state: &mut state,
             verbose: false,
+            trace_io: false,
         };
 
         f(memory)

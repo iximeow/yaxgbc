@@ -1343,6 +1343,7 @@ mod test {
                 management_bits: [0u8; 512],
             },
             verbose: false,
+            trace_io: false,
         };
         cpu.step(&mut memory);
     }
