@@ -130,6 +130,9 @@ impl miniquad::EventHandler for GBCPainter {
             if debounce_ref.debounce(crate::Input::RenderSpriteDebugPanelToggle, egui_ctx.input(|i| i.key_down(egui::Key::T))) {
                 gb.do_input(crate::Input::RenderSpriteDebugPanelToggle);
             }
+            if debounce_ref.debounce(crate::Input::NextTileDebugBank, egui_ctx.input(|i| i.key_down(egui::Key::Y))) {
+                gb.do_input(crate::Input::NextTileDebugBank);
+            }
             if debounce_ref.debounce(crate::Input::TraceIO, egui_ctx.input(|i| i.key_down(egui::Key::I))) {
                 gb.do_input(crate::Input::TraceIO);
             }
@@ -157,7 +160,7 @@ impl miniquad::EventHandler for GBCPainter {
                 // OAM debug panel height
                 for y in 0..OAM_DEBUG_PANEL_HEIGHT {
                     // OAM debug panel width
-                    for x in 0..42 {
+                    for x in 0..OAM_DEBUG_PANEL_WIDTH {
                         let next_px = &gb.sprite_debug_panel[addr * 4..][..4];
                         pixels.extend_from_slice(next_px);
                         addr += 1;
@@ -278,9 +281,9 @@ impl miniquad::EventHandler for GBCPainter {
 const SCREEN_HEIGHT: u16 = 144;
 const SCREEN_WIDTH: u16 = 160;
 
-// 4 sprites wide: 4 * (8 + 2) + 2 = 42 px wide
+// 12 tiles wide: 12 * (8 + 2) + 2 = 122 px wide
 // 10 sprites tall: 10 * (16 + 2) + 2 = 182 px tall
-const OAM_DEBUG_PANEL_WIDTH: u16 = 42;
+const OAM_DEBUG_PANEL_WIDTH: u16 = 122;
 const OAM_DEBUG_PANEL_HEIGHT: u16 = 182;
 
 pub(crate) fn do_ui(gb_state: Arc<Mutex<GBC>>) {

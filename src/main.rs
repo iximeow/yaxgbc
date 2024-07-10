@@ -513,7 +513,7 @@ impl Lcd {
         self.oam[address as usize] = value
     }
 
-    fn render_sprite_debug(&self, vram: &[u8], display: &mut [u8; 4 * 42 * 182]) {
+    fn render_sprite_debug(&self, vram: &[u8], display: &mut [u8; 4 * 122 * 182]) {
         let sprite_height = if self.lcdc & 0b100 == 0 {
             8
         } else {
@@ -521,8 +521,10 @@ impl Lcd {
         };
 
         for i in 0..self.oam.len() / 4 {
-            let obj_x = 2 + (i % 4) * (8 + 2);
-            let obj_y = 2 + (i / 4) * (16 + 2);
+            let obj_x = i % 4;
+            let obj_x_px = 2 + obj_x * (8 + 2);
+            let obj_y = i / 4;
+            let obj_y_px = 2 + obj_y * (16 + 2);
 
             // disregard lcdc.3; we'll draw both tiles of 8x16 images, just.. not in the right
             // layout.
@@ -562,7 +564,7 @@ impl Lcd {
                         (((tile_row_lo >> (7 - x)) & 1) << 0);
 
                     // 102 = OAM_DEBUG_PANEL_WIDTH
-                    let addr = obj_x + x + (obj_y + selected_line) * 42;
+                    let addr = obj_x_px + x + (obj_y_px + selected_line) * 122;
 
                     if px != 0 {
                         let rgb = Self::px2rgba(&self.object_palette_data_cache, oam_attrs.bg_palette(), px);
@@ -570,6 +572,74 @@ impl Lcd {
                         display[addr as usize * 4..][..4].copy_from_slice(&rgb);
                     } else {
                         display[addr as usize * 4..][..4].copy_from_slice(&[0, 0, 0, 0]);
+                    }
+                }
+            }
+        }
+    }
+
+
+    fn render_bg_debug(&self, vram: &[u8], display: &mut [u8; 4 * 122 * 182]) {
+        let sprite_height = 8;
+
+        for i in 0..128usize { // look at the first 160 tiles out of all 256 in the lcdc-addressible region
+            let obj_x = 42 + 2 + (i % 8 + 4) * (12 + 2);
+            let obj_y = 1 + (i / 8) * (12 + 1);
+
+            let obj_x = i % 8;
+            let obj_x_px = 42 + 2 + obj_x * (8 + 2);
+            let obj_y = i / 8;
+            let obj_y_px = 2 + obj_y * (8 + 2);
+
+
+            // disregard lcdc.3; we'll draw both tiles of 8x16 images, just.. not in the right
+            // layout.
+            let tile_index = i + self.tile_debug_base as usize * 128;
+            let attrs = if !self.dmg_compat {
+                TileAttributes(vram[/* tile map base, ignore lcdc */ 0x1800 + i as usize + 0x2000])
+            } else {
+                TileAttributes(0)
+            };
+            let tile_addr = tile_index as usize * 16;
+
+            let bank = attrs.vram_bank() as usize * 0x2000;
+
+            for selected_line in 0..sprite_height {
+                let y_addr = if attrs.flip_vertical() {
+                    (sprite_height - 1) - selected_line
+                } else {
+                    selected_line
+                };
+                let (tile_row_lo, tile_row_hi) = {
+                    let mut tile_addr = bank + tile_index as usize * 16;
+                    let mut tile_line = y_addr;
+
+                    let tile_data = &vram[tile_addr..][..16];
+                    let lo = tile_data[tile_line as usize * 2];
+                    let hi = tile_data[tile_line as usize * 2 + 1];
+                    (lo, hi)
+                };
+
+                for x in 0..8 {
+                    let x = if attrs.flip_horizontal() {
+                        7 - x
+                    } else {
+                        x
+                    };
+
+                    let px =
+                        (((tile_row_hi >> (7 - x)) & 1) << 1) |
+                        (((tile_row_lo >> (7 - x)) & 1) << 0);
+
+                    // 102 = OAM_DEBUG_PANEL_WIDTH
+                    let addr = obj_x_px + x + (obj_y_px + selected_line) * 122;
+
+                    if px != 0 {
+                        let rgb = Self::px2rgba(&self.background_palette_data_cache, attrs.bg_palette(), px);
+
+                        display[addr * 4..][..4].copy_from_slice(&rgb);
+                    } else {
+                        display[addr * 4..][..4].copy_from_slice(&[0, 0, 0, 0]);
                     }
                 }
             }
@@ -980,7 +1050,7 @@ struct GBC {
     frame_times: Vec<SystemTime>,
     state: GBCState,
     cpu: Cpu,
-    sprite_debug_panel: Box<[u8; 4 * 182 * 42]>,
+    sprite_debug_panel: Box<[u8; 4 * 182 * 122]>,
     audio_sink: Option<rodio::Sink>,
     // at all times two of the three below will be Some.
     active_rom: GBCCart,
@@ -1626,6 +1696,7 @@ enum Input {
     VerboseToggle,
     Left, Right, Up, Down,
     RenderSpriteDebugPanelToggle,
+    NextTileDebugBank,
     TraceIO,
     Reset,
     Turbo,
@@ -1643,7 +1714,7 @@ impl GBC {
                 management_bits: [0u8; 0x200],
             },
             cpu: Cpu::new(),
-            sprite_debug_panel: Box::new([0; 4 * 182 * 42]),
+            sprite_debug_panel: Box::new([0; 4 * 182 * 122]),
             active_rom: boot_rom,
             cart: GBCCart::empty(),
             boot_rom: GBCCart::empty(),
@@ -1665,7 +1736,7 @@ impl GBC {
     fn reset(&mut self) {
         self.cpu = Cpu::new();
         self.state.lcd = Lcd::new();
-        self.sprite_debug_panel = Box::new([0; 4 * 182 * 42]);
+        self.sprite_debug_panel = Box::new([0; 4 * 182 * 122]);
         self.state.apu = Apu::new();
 
         // figure out which rom is which, reset them, and return state to fresh boot..
@@ -1739,6 +1810,10 @@ impl GBC {
             },
             Input::RenderSpriteDebugPanelToggle => {
                 self.show_sprite_debug_panel ^= true;
+            }
+            Input::NextTileDebugBank => {
+                self.state.lcd.tile_debug_base += 1;
+                self.state.lcd.tile_debug_base %= 3;
             }
             Input::TraceIO => {
                 self.trace_io ^= true;
@@ -1823,6 +1898,7 @@ impl GBC {
         if vblank_int {
             if self.show_sprite_debug_panel {
                 self.state.lcd.render_sprite_debug(&self.state.vram, &mut self.sprite_debug_panel);
+                self.state.lcd.render_bg_debug(&self.state.vram, &mut self.sprite_debug_panel);
             }
 //            eprintln!("fire vblank interrupt at clock {}", self.clock);
             self.state.management_bits[IF] |= 0b00001;
