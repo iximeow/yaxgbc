@@ -268,6 +268,7 @@ struct Pixel {
     pixel: u8,
     bg_priority: bool,
     oam_pri: u8,
+    _pad: u8,
 }
 
 impl Default for Pixel {
@@ -276,7 +277,8 @@ impl Default for Pixel {
             rgb: [0u8; 4],
             pixel: 0,
             bg_priority: false,
-            oam_pri: 255
+            oam_pri: 255,
+            _pad: 0,
         }
     }
 }
@@ -1014,7 +1016,8 @@ impl Lcd {
                                             1
                                         } else {
                                             item.x
-                                        }
+                                        },
+                                        _pad: 0,
                                     };
                                 }
 //                            } else {
@@ -1051,7 +1054,7 @@ impl Lcd {
                         ((window_y / 8) as u16, (window_y as u16 % 8))
                     });
                     for i in 0..160u8 {
-                        let (line_x, tile_data, mut attributes) = window_coords.and_then(|(window_y, window_y_offset)| {
+                        let (line_x, tile_data, attributes) = window_coords.and_then(|(window_y, window_y_offset)| {
                             if i + 7 < wx {
                                 // the window y-line was visible, but still too far left to draw
                                 // it.
@@ -1109,6 +1112,7 @@ impl Lcd {
                             rgb,
                             bg_priority: attributes.priority(),
                             oam_pri: 0,
+                            _pad: 0,
                         };
 
                         self.background_pixels[self.curr_background_pixel as usize] = px;
@@ -1212,7 +1216,6 @@ struct GBC {
     input_directions: u8,
 //    audio: Rc<GBCAudio>,
     verbose: bool,
-    dmg_compat: bool,
     trace_io: bool,
     show_sprite_debug_panel: bool,
     turbo: bool,
@@ -1879,7 +1882,6 @@ impl GBC {
             input_actions: 0,
             input_directions: 0,
             verbose: false,
-            dmg_compat: false,
             trace_io: false,
             show_sprite_debug_panel: false,
             turbo: false,
@@ -1900,7 +1902,6 @@ impl GBC {
             // boot cart is the active one. leave it as-is..
         };
         self.boot_rom.reset();
-        self.dmg_compat = false;
         self.cart.reset();
         self.active_rom.reset();
         self.in_boot = true;
@@ -1982,7 +1983,6 @@ impl GBC {
     }
 
     fn set_cart(&mut self, cart: GBCCart) {
-        self.dmg_compat = !cart.cgb;
         self.cart = cart;
     }
 
