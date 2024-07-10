@@ -1537,6 +1537,7 @@ impl MemoryBanks for MemoryMapping<'_> {
             } else if reg == HDMA4 {
                 self.state.management_bits[reg] = value;
             } else if reg == HDMA5 {
+                self.state.management_bits[HDMA5] = value;
                 let source = (self.state.management_bits[HDMA1] as u16) << 8 | ((self.state.management_bits[HDMA2] as u16 & 0xf0));
                 let dest = ((((self.state.management_bits[HDMA3] as u16) << 8) & 0x1fff) | 0x8000) | ((self.state.management_bits[HDMA4] as u16 & 0xf0));
                 let size = self.state.management_bits[HDMA5] as u16;
