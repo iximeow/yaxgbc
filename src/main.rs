@@ -227,6 +227,7 @@ fn main() {
 struct Lcd {
     // HBlank, VBlank, Searching OAM, Transferring Data to LCD Controller
     mode: u8,
+    dmg_compat: bool,
     lcdc: u8,
     ly: u8,
     lcd_clock: u64,
@@ -242,12 +243,16 @@ struct Lcd {
     background_palette_data_cache: [[u8; 4]; 0x20],
     object_palettes_data: [u8; 0x40],
     object_palette_data_cache: [[u8; 4]; 0x20],
+    dmg_bg_palette: u8,
+    dmg_obp0_palette: u8,
+    dmg_obp1_palette: u8,
     background_pixels: [Pixel; 160],
     curr_background_pixel: u8,
     oam_pixels: [Pixel; 160],
     display: Box<[u8; 4 * 144 * 160]>,
     toggle_background_sprite_bank: bool,
     toggle_oam_sprite_bank: bool,
+    tile_debug_base: u8,
 }
 
 #[derive(Copy, Clone, Default, PartialEq, Debug)]
@@ -338,6 +343,7 @@ impl Lcd {
     fn new() -> Self {
         Self {
             mode: 1,
+            dmg_compat: false,
             lcdc: 0,
             ly: 0,
             lcd_clock: 0,
@@ -352,12 +358,16 @@ impl Lcd {
             background_palette_data_cache: [[0u8; 4]; 0x20],
             object_palettes_data: [0u8; 0x40],
             object_palette_data_cache: [[0u8; 4]; 0x20],
+            dmg_bg_palette: 0u8,
+            dmg_obp0_palette: 0u8,
+            dmg_obp1_palette: 0u8,
             background_pixels: [Pixel::default(); 160],
             curr_background_pixel: 0,
             oam_pixels: [Pixel::default(); 160],
             display: Box::new([0u8; 4 * 144 * 160]),
             toggle_background_sprite_bank: false,
             toggle_oam_sprite_bank: false,
+            tile_debug_base: 0,
         }
     }
 
@@ -376,46 +386,79 @@ impl Lcd {
         // this function computes palette caches for both background and object palettes only
         // because i didn't feel like making two functions.
 
-        for palette_nr in 0..8 {
-            for px in 0..4 {
-                let color_lo = self.background_palettes_data[palette_nr * 8 + px * 2];
-                let color_hi = self.background_palettes_data[palette_nr * 8 + px * 2 + 1];
-                let color = ((color_hi as u16) << 8) | (color_lo as u16);
+        if !self.dmg_compat {
+            for palette_nr in 0..8 {
+                for px in 0..4 {
+                    let color_lo = self.background_palettes_data[palette_nr * 8 + px * 2];
+                    let color_hi = self.background_palettes_data[palette_nr * 8 + px * 2 + 1];
+                    let color = ((color_hi as u16) << 8) | (color_lo as u16);
 
-                let r = color & 0x1f;
-                let g = (color >> 5) & 0x1f;
-                let b = (color >> 10) & 0x1f;
-                let rgba = [
-                    CHANNEL_CORRECTION[r as usize],
-                    CHANNEL_CORRECTION[g as usize],
-                    CHANNEL_CORRECTION[b as usize],
-                    0xff
-                ];
-                self.background_palette_data_cache[palette_nr * 4 + px] = rgba;
+                    let r = color & 0x1f;
+                    let g = (color >> 5) & 0x1f;
+                    let b = (color >> 10) & 0x1f;
+                    let rgba = [
+                        CHANNEL_CORRECTION[r as usize],
+                        CHANNEL_CORRECTION[g as usize],
+                        CHANNEL_CORRECTION[b as usize],
+                        0xff
+                    ];
+                    self.background_palette_data_cache[palette_nr * 4 + px] = rgba;
+                }
             }
-        }
 
-        for palette_nr in 0..8 {
-            for px in 0..4 {
-                let color_lo = self.object_palettes_data[palette_nr * 8 + px * 2];
-                let color_hi = self.object_palettes_data[palette_nr * 8 + px * 2 + 1];
-                let color = ((color_hi as u16) << 8) | (color_lo as u16);
+            for palette_nr in 0..8 {
+                for px in 0..4 {
+                    let color_lo = self.object_palettes_data[palette_nr * 8 + px * 2];
+                    let color_hi = self.object_palettes_data[palette_nr * 8 + px * 2 + 1];
+                    let color = ((color_hi as u16) << 8) | (color_lo as u16);
 
-                let r = color & 0x1f;
-                let g = (color >> 5) & 0x1f;
-                let b = (color >> 10) & 0x1f;
-                let rgba = [
-                    CHANNEL_CORRECTION[r as usize],
-                    CHANNEL_CORRECTION[g as usize],
-                    CHANNEL_CORRECTION[b as usize],
-                    0xff
-                ];
-                self.object_palette_data_cache[palette_nr * 4 + px] = rgba;
+                    let r = color & 0x1f;
+                    let g = (color >> 5) & 0x1f;
+                    let b = (color >> 10) & 0x1f;
+                    let rgba = [
+                        CHANNEL_CORRECTION[r as usize],
+                        CHANNEL_CORRECTION[g as usize],
+                        CHANNEL_CORRECTION[b as usize],
+                        0xff
+                    ];
+                    self.object_palette_data_cache[palette_nr * 4 + px] = rgba;
+                }
             }
+        } else {
+            // similar palette precomputation for the DMG, but palette logic is simpler...
+            const COLORS: [[u8; 4]; 4] = [
+                [0xf0, 0xf5, 0xf0, 0xff],
+                [0xb0, 0xb5, 0xb0, 0xff],
+                [0x60, 0x65, 0x60, 0xff],
+                [0x10, 0x15, 0x10, 0xff],
+            ];
+
+            self.background_palette_data_cache[0] = COLORS[(self.dmg_bg_palette as usize >> 0) & 0x03];
+            self.background_palette_data_cache[1] = COLORS[(self.dmg_bg_palette as usize >> 2) & 0x03];
+            self.background_palette_data_cache[2] = COLORS[(self.dmg_bg_palette as usize >> 4) & 0x03];
+            self.background_palette_data_cache[3] = COLORS[(self.dmg_bg_palette as usize >> 6) & 0x03];
+
+            self.object_palette_data_cache[0] = COLORS[(self.dmg_obp0_palette as usize >> 0) & 0x03];
+            self.object_palette_data_cache[1] = COLORS[(self.dmg_obp0_palette as usize >> 2) & 0x03];
+            self.object_palette_data_cache[2] = COLORS[(self.dmg_obp0_palette as usize >> 4) & 0x03];
+            self.object_palette_data_cache[3] = COLORS[(self.dmg_obp0_palette as usize >> 6) & 0x03];
+
+            self.object_palette_data_cache[4] = COLORS[(self.dmg_obp1_palette as usize >> 0) & 0x03];
+            self.object_palette_data_cache[5] = COLORS[(self.dmg_obp1_palette as usize >> 2) & 0x03];
+            self.object_palette_data_cache[6] = COLORS[(self.dmg_obp1_palette as usize >> 4) & 0x03];
+            self.object_palette_data_cache[7] = COLORS[(self.dmg_obp1_palette as usize >> 6) & 0x03];
+
+            // actually, make these debug colors, they shouldn't ever get shown...
+            self.object_palette_data_cache[0] = [0xa0, 0xa0, 0x00, 0xff];
+            self.object_palette_data_cache[4] = [0xa0, 0xa0, 0x00, 0xff];
         }
     }
 
     fn px2rgba(palette_data_cache: &[[u8; 4]; 0x20], palette_nr: u8, px: u8) -> [u8; 4] {
+        palette_data_cache[(palette_nr * 4 + px) as usize]
+    }
+
+    fn px2grey(palette_data_cache: &[[u8; 4]; 0x20], palette_nr: u8, px: u8) -> [u8; 4] {
         palette_data_cache[(palette_nr * 4 + px) as usize]
     }
 
@@ -427,7 +470,11 @@ impl Lcd {
         // find the right data.
         let tile_map_base = self.window_tile_base() as usize;
         let tile_id = vram[tile_map_base + tile_nr as usize];
-        let tile_attrs = TileAttributes(vram[tile_map_base + tile_nr as usize + 0x2000]);
+        let tile_attrs = if self.dmg_compat {
+            TileAttributes(0)
+        } else {
+            TileAttributes(vram[tile_map_base + tile_nr as usize + 0x2000])
+        };
 
         let mut tile_data_addr = self.tile_addr_translate(tile_id);
 
@@ -443,7 +490,11 @@ impl Lcd {
         // find the right data.
         let tile_map_base = self.background_tile_base() as usize;
         let tile_id = vram[tile_map_base + tile_nr as usize];
-        let tile_attrs = TileAttributes(vram[tile_map_base + tile_nr as usize + 0x2000]);
+        let tile_attrs = if self.dmg_compat {
+            TileAttributes(0)
+        } else {
+            TileAttributes(vram[tile_map_base + tile_nr as usize + 0x2000])
+        };
 
         let mut tile_data_addr = self.tile_addr_translate(tile_id);
 
@@ -451,9 +502,10 @@ impl Lcd {
 
         (&vram[tile_data_addr..][..16], tile_attrs)
     }
-    fn tile_addr_translate<'a>(&self, tile_id: u8) -> usize {
+    fn tile_addr_translate(&self, tile_id: u8) -> usize {
         let data_offset = if self.lcdc & 0b0001_0000 == 0 {
-            let addr = ((tile_id as i8).wrapping_add(-0x80)) as u8 as u16 * 16;
+//            let addr = ((tile_id as i8).wrapping_add(-0x80)) as u8 as u16 * 16;
+            let addr = (tile_id ^ 0x80) as usize * 16;
             0x800 + addr as usize
         } else {
             tile_id as usize * 16
@@ -482,7 +534,15 @@ impl Lcd {
     }
 
     fn window_enable(&self) -> bool {
-        self.lcdc & 0b0010_0000 != 0
+        if !self.dmg_compat {
+            self.lcdc & 0b0010_0000 != 0
+        } else {
+            if self.lcdc & 0b0000_0001 == 0 {
+                false
+            } else {
+                self.lcdc & 0b0010_0000 != 0
+            }
+        }
     }
 
     fn sprite_double_size(&self) -> bool {
@@ -567,7 +627,11 @@ impl Lcd {
                     let addr = obj_x_px + x + (obj_y_px + selected_line) * 122;
 
                     if px != 0 {
-                        let rgb = Self::px2rgba(&self.object_palette_data_cache, oam_attrs.bg_palette(), px);
+                        let rgb = if !self.dmg_compat {
+                            Self::px2rgba(&self.object_palette_data_cache, oam_attrs.bg_palette(), px)
+                        } else {
+                            Self::px2grey(&self.object_palette_data_cache, oam_attrs.palette_number(), px)
+                        };
 
                         display[addr as usize * 4..][..4].copy_from_slice(&rgb);
                     } else {
@@ -694,7 +758,9 @@ impl Lcd {
                 for px in 0..(self.curr_background_pixel as usize) {
                     assert!(self.curr_background_pixel == 160);
                     let addr = (self.ly as usize * 160 + px) * 4;
-                    self.display[addr..][..4].copy_from_slice(&self.background_pixels[px].rgb[..]);
+                    if !self.dmg_compat || (self.dmg_compat && self.lcdc & 1 == 1) {
+                        self.display[addr..][..4].copy_from_slice(&self.background_pixels[px].rgb[..]);
+                    }
                     if self.oam_pixels[px].pixel != 0 && (!(self.oam_pixels[px].bg_priority && self.background_pixels[px].pixel != 0)) {
                         self.display[addr..][..4].copy_from_slice(&self.oam_pixels[px].rgb[..]);
                     }
@@ -809,7 +875,11 @@ impl Lcd {
                         if item.x >= 168 {
                             continue;
                         }
-                        let bank = (item.oam_attrs.vram_bank() as usize * 0x2000) ^ (if self.toggle_oam_sprite_bank { 0x2000 } else { 0 });
+                        let bank = if self.dmg_compat {
+                            0
+                        } else {
+                            (item.oam_attrs.vram_bank() as usize * 0x2000) ^ (if self.toggle_oam_sprite_bank { 0x2000 } else { 0 })
+                        };
                         let oam_tile_addr = bank + item.tile_index as usize * 16;
                         let y_addr = if item.oam_attrs.flip_vertical() {
                             let oam_height = if self.lcdc & 0b100 == 0 {
@@ -852,7 +922,11 @@ impl Lcd {
                                 (((tile_row_lo >> (7 - x)) & 1) << 0);
 
                             if px != 0 {
-                                let rgb = Self::px2rgba(&self.object_palette_data_cache, item.oam_attrs.bg_palette(), px);
+                                let rgb = if self.dmg_compat {
+                                    Self::px2grey(&self.object_palette_data_cache, item.oam_attrs.palette_number(), px)
+                                } else {
+                                    Self::px2rgba(&self.object_palette_data_cache, item.oam_attrs.bg_palette(), px)
+                                };
                                 /*
                                 const COLORS: &[u32] = &[
                                     0x0000ff, 0x000080, 0x000040,
@@ -1065,6 +1139,7 @@ struct GBC {
     input_directions: u8,
 //    audio: Rc<GBCAudio>,
     verbose: bool,
+    dmg_compat: bool,
     trace_io: bool,
     show_sprite_debug_panel: bool,
     turbo: bool,
@@ -1216,11 +1291,11 @@ impl MemoryBanks for MemoryMapping<'_> {
                         }
                         self.state.lcd.lcdc
                     } else if reg == BGP {
-                        self.state.management_bits[reg]
+                        self.state.lcd.dmg_bg_palette
                     } else if reg == OBP0 {
-                        self.state.management_bits[reg]
+                        self.state.lcd.dmg_obp0_palette
                     } else if reg == OBP1 {
-                        self.state.management_bits[reg]
+                        self.state.lcd.dmg_obp1_palette
                     } else if reg == BANK {
                         self.state.management_bits[reg]
                     } else if reg == IF {
@@ -1400,15 +1475,18 @@ impl MemoryBanks for MemoryMapping<'_> {
 //                eprintln!("TAC set to {:02x}", value);
                 self.state.management_bits[reg] = value;
             } else if reg == BGP {
-                self.state.management_bits[reg] = value;
+                self.state.lcd.dmg_bg_palette = value;
+                self.state.lcd.recompute_palette_cache();
             } else if reg == WX {
                 self.state.management_bits[reg] = value;
             } else if reg == WY {
                 self.state.management_bits[reg] = value;
             } else if reg == OBP0 {
-                self.state.management_bits[reg] = value & 0b1111_1100;
+                self.state.lcd.dmg_obp0_palette = value;
+                self.state.lcd.recompute_palette_cache();
             } else if reg == OBP1 {
-                self.state.management_bits[reg] = value & 0b1111_1100;
+                self.state.lcd.dmg_obp1_palette = value;
+                self.state.lcd.recompute_palette_cache();
             } else if reg == BANK {
                 self.state.management_bits[reg] = value;
             } else if reg == STAT {
@@ -1727,6 +1805,7 @@ impl GBC {
             input_actions: 0,
             input_directions: 0,
             verbose: false,
+            dmg_compat: false,
             trace_io: false,
             show_sprite_debug_panel: false,
             turbo: false,
@@ -1747,6 +1826,7 @@ impl GBC {
             // boot cart is the active one. leave it as-is..
         };
         self.boot_rom.reset();
+        self.dmg_compat = false;
         self.cart.reset();
         self.active_rom.reset();
         self.in_boot = true;
@@ -1828,6 +1908,7 @@ impl GBC {
     }
 
     fn set_cart(&mut self, cart: GBCCart) {
+        self.dmg_compat = !cart.cgb;
         self.cart = cart;
     }
 
@@ -2028,9 +2109,17 @@ impl GBC {
         if self.in_boot {
             let boot_rom_disable = mem_map.load(0xff50);
             if boot_rom_disable != 0 {
+                if self.state.management_bits[SVBK] != 0 {
+                    panic!("svbk in nonsense mode at rom switch: {}", self.state.management_bits[SVBK]);
+                }
+                if self.state.management_bits[VBK] != 0 {
+                    panic!("vbk in nonsense mode at rom switch: {}", self.state.management_bits[VBK]);
+                }
 //                eprintln!("boot rom complete, switching to cart");
 //                self.verbose = true;
 //                self.cpu.verbose = true;
+                self.state.lcd.dmg_compat = !self.active_rom.cgb;
+                self.state.lcd.recompute_palette_cache();
                 self.in_boot = false;
                 std::mem::swap(&mut self.active_rom, &mut self.boot_rom);
                 std::mem::swap(&mut self.cart, &mut self.active_rom);
@@ -2218,6 +2307,7 @@ fn parse_features(features: u8) -> Option<CartridgeFeatures> {
 }
 
 struct GBCCart {
+    cgb: bool,
     features: CartridgeFeatures,
     mapper: Box<dyn MemoryBanks + Send>,
 }
@@ -2686,12 +2776,15 @@ impl GBCCart {
 
     fn raw(data: Vec<u8>) -> Self {
         Self {
+            cgb: false,
             features: CartridgeFeatures::default(),
             mapper: Box::new(FlatMapper::new(data.into_boxed_slice())),
         }
     }
 
     fn new(data: Vec<u8>, ram: Option<File>) -> Result<Self, String> {
+        let cgb = (data[0x143] & 0x80) != 0;
+
         let features = parse_features(data[0x147]);
 
         let size = (32 * 1024) << data[0x148];
@@ -2718,9 +2811,9 @@ impl GBCCart {
 
         let mapper = features.mbc.make_mapper(ram_style, data.into_boxed_slice(), ram);
 
-        eprintln!("cartridge type {:#02x}, features: {:?}", mapper.load(0x147), features);
+        eprintln!("hardware: {}, cartridge type {:#02x}, features: {:?}", if cgb { "cgb" } else { "dmg" }, mapper.load(0x147), features);
 
-        Ok(Self { features, mapper })
+        Ok(Self { cgb, features, mapper })
     }
 }
 
