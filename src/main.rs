@@ -232,6 +232,9 @@ fn main() {
 struct Lcd {
     // HBlank, VBlank, Searching OAM, Transferring Data to LCD Controller
     mode: u8,
+    oam_enable_real: bool,
+    background_enable_real: bool,
+    window_enable_real: bool,
     dmg_compat: bool,
     lcdc: u8,
     ly: u8,
@@ -360,6 +363,9 @@ impl Lcd {
     fn new() -> Self {
         Self {
             mode: 1,
+            oam_enable_real: true,
+            background_enable_real: true,
+            window_enable_real: true,
             dmg_compat: false,
             lcdc: 0,
             ly: 0,
@@ -553,6 +559,10 @@ impl Lcd {
     }
 
     fn window_enable(&self) -> bool {
+        if !self.window_enable_real {
+            return false;
+        }
+
         if !self.dmg_compat {
             self.lcdc & 0b0010_0000 != 0
         } else {
@@ -1006,7 +1016,7 @@ impl Lcd {
                                     item.x <= self.oam_pixels[x_addr as usize].oam_pri
                                 };
 
-                                if can_overwrite {
+                                if can_overwrite && self.oam_enable_real {
                                     self.oam_pixels[x_addr as usize] = Pixel {
                                         pixel: px,
                                         rgb,
@@ -1114,7 +1124,14 @@ impl Lcd {
                             _pad: 0,
                         };
 
-                        self.background_pixels[self.curr_background_pixel as usize] = px;
+                        // either the window is drawn (-> window_enable_real) or the background is
+                        // permitted. whatever pixel here is one we're ok drawing.
+                        if window_coords.is_some() || self.background_enable_real {
+                            self.background_pixels[self.curr_background_pixel as usize] = px;
+                        } else {
+                            // background is disabled and it was drawn, or window is disabled and
+                            // it was drawn.
+                        }
                         self.curr_background_pixel += 1;
                     }
 /*
@@ -1870,6 +1887,10 @@ enum Input {
     TraceIO,
     Reset,
     Turbo,
+
+    OamEnable,
+    BackgroundEnable,
+    WindowEnable,
 }
 
 impl GBC {
@@ -2007,6 +2028,16 @@ impl GBC {
             }
             Input::Turbo => {
                 self.turbo ^= true;
+            }
+
+            Input::OamEnable => {
+                self.state.lcd.oam_enable_real ^= true;
+            }
+            Input::BackgroundEnable => {
+                self.state.lcd.background_enable_real ^= true;
+            }
+            Input::WindowEnable => {
+                self.state.lcd.window_enable_real ^= true;
             }
             Input::Reset => {
                 self.reset();

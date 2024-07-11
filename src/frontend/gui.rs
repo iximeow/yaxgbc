@@ -157,6 +157,15 @@ impl miniquad::EventHandler for GBCPainter {
             if debounce_ref.debounce(crate::Input::Continue, egui_ctx.input(|i| i.key_down(egui::Key::M))) {
                 gb.do_input(crate::Input::Continue);
             }
+            if debounce_ref.debounce(crate::Input::OamEnable, egui_ctx.input(|i| i.key_down(egui::Key::Num1))) {
+                gb.do_input(crate::Input::OamEnable);
+            }
+            if debounce_ref.debounce(crate::Input::BackgroundEnable, egui_ctx.input(|i| i.key_down(egui::Key::Num2))) {
+                gb.do_input(crate::Input::BackgroundEnable);
+            }
+            if debounce_ref.debounce(crate::Input::WindowEnable, egui_ctx.input(|i| i.key_down(egui::Key::Num3))) {
+                gb.do_input(crate::Input::WindowEnable);
+            }
         });
         let mut pixels: Vec<u8> = Vec::new();
         let mut addr = 0;
