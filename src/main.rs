@@ -1578,7 +1578,7 @@ impl MemoryBanks for MemoryMapping<'_> {
             } else if reg == BANK {
                 self.state.management_bits[reg] = value;
             } else if reg == STAT {
-                self.state.management_bits[reg] = value & 0b1111_0000;
+                self.state.management_bits[reg] = value & 0b1111_1000;
             } else if reg == LYC {
 //                eprintln!("setting LYC to {:02x}", value);
                 self.state.management_bits[reg] = value;
