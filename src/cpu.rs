@@ -86,6 +86,7 @@ pub(crate) struct ExecutionEnvironment<'env, 'storage: 'env> {
     pub cpu: &'env mut Cpu,
     pub storage: &'env mut MemoryMapping<'storage>,
     pub clocks: u16,
+    pub line_clock: u16,
 }
 
 impl ExecutionEnvironment<'_, '_> {
@@ -336,6 +337,13 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
     }
     fn on_ldh_a_deref_high_8b(&mut self, ofs: u8) -> Result<(), <SM83 as Arch>::DecodeError> {
         self.cpu.af[1] = self.storage.load(0xff00 + ofs as u16);
+
+        // GROSS AWFUL HACK (part 2): actually implement LY fixup. only done for `ldh` loads
+        // because other loads are unlikely to be used for high ram. it's certainly possible
+        // though, and in such cases.. well, sorry..
+        if ofs == 0x44 && self.line_clock + self.clocks >= 456 {
+            self.cpu.af[1] = self.cpu.af[1].wrapping_add(1);
+        }
         Ok(())
     }
     fn on_ldh_deref_high_8b_a(&mut self, ofs: u8) -> Result<(), <SM83 as Arch>::DecodeError> {
@@ -348,6 +356,13 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
     }
     fn on_ldh_a_deref_high_c(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
         self.cpu.af[1] = self.storage.load(0xff00 + self.cpu.bc[0] as u16);
+
+        // GROSS AWFUL HACK (part 2): actually implement LY fixup. only done for `ldh` loads
+        // because other loads are unlikely to be used for high ram. it's certainly possible
+        // though, and in such cases.. well, sorry..
+        if self.cpu.bc[0] == 0x44 && self.line_clock + self.clocks >= 456 {
+            self.cpu.af[1] = self.cpu.af[1].wrapping_add(1);
+        }
         Ok(())
     }
     #[inline(always)]
@@ -1033,7 +1048,7 @@ impl Cpu {
             pc: 0,
             speed_mode: 0,
             ime: true,
-            verbose: true,
+            verbose: false,
             halted: false,
             branch_trace: VecDeque::new(),
             call_stack: Vec::new(),
@@ -1311,7 +1326,16 @@ impl Cpu {
         ];
         let mut reader = U8Reader::new(&buf);
         let decoder = yaxpeax_sm83::InstDecoder::default();
-        let mut env = ExecutionEnvironment { cpu: self, storage: memory, clocks: 0 };
+        // GROSS AWFUL HACK (part 1):
+        // if we would load from LY while line clock + clocks is >= 456, we should actually load
+        // LY+1 (this would be the actual value in the PPU, but we're not going to drive the PPU
+        // until the CPU is done. so we're predicting what the PPU state will be in a moment when
+        // we get thre.)
+        //
+        // the cleaner way to do this would be to drive the PPU when the CPU clock ticks, but that
+        // inverts the whole thing and is kind of a mess.
+        let line_clock = (memory.state.lcd.lcd_clock - memory.state.lcd.current_line_start) as u16;
+        let mut env = ExecutionEnvironment { cpu: self, storage: memory, clocks: 0, line_clock };
 
         yaxpeax_sm83::decode_inst(&decoder, &mut env, &mut reader).unwrap();
 

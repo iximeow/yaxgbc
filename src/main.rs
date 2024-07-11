@@ -573,9 +573,7 @@ impl Lcd {
     }
 
     fn set_lcdc(&mut self, new_lcdc: u8) {
-        if self.mode != 1 {
-//            eprintln!("set lcdc to {:08b} outside mode 1?", new_lcdc);
-        }
+//        eprintln!("set lcdc to {:08b} during mode {} (ly={})", new_lcdc, self.mode, self.ly);
         self.lcdc = new_lcdc;
     }
 
@@ -736,6 +734,7 @@ impl Lcd {
         if !self.on() {
             return (false, false);
         }
+
         // the number of dots (LCD clocks) to display one line. `HBlank` is whatever time is
         // necessary to meet this time, after completing mode 3.
         self.lcd_clock = self.lcd_clock.wrapping_add(clocks);
@@ -2169,6 +2168,7 @@ impl GBC {
 
         let pc_before = self.cpu.pc;
         let clocks = self.cpu.step(&mut mem_map);
+
         /*
         if !self.in_boot && false {
             eprintln!(
