@@ -3,7 +3,7 @@ use std::fmt::Write;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::{STAT, SCX, SCY, IF, IE, GBC, LCDC, LY, LYC};
+use crate::{STAT, SCX, SCY, IF, IE, GBC, LCDC, LY, LYC, WX, WY};
 
 use std::time::SystemTime;
 
@@ -85,8 +85,11 @@ impl miniquad::EventHandler for GBCPainter {
                 ui.label(format!("vblank/s(?): {}", gb.frame_times.len()));
                 ui.label(format!("scy: {}", gb.state.management_bits[SCY]));
                 ui.label(format!("scx: {}", gb.state.management_bits[SCX]));
-                ui.label(format!("ly: {}", gb.state.management_bits[LY]));
+                ui.label(format!("wy: {}", gb.state.management_bits[WY]));
+                ui.label(format!("wx: {}", gb.state.management_bits[WX]));
+                ui.label(format!("ly: {}", gb.state.lcd.ly));
                 ui.label(format!("lyc: {}", gb.state.management_bits[LYC]));
+                ui.label(format!("stat: {}", gb.state.management_bits[STAT] | gb.state.lcd.mode));
                 ui.label(format!("lcdc: {}", gb.state.lcd.lcdc));
                 ui.label(format!("ie: {}", gb.state.management_bits[IE]));
                 ui.label(format!("if: {}", gb.state.management_bits[IF]));
@@ -141,6 +144,18 @@ impl miniquad::EventHandler for GBCPainter {
             }
             if debounce_ref.debounce(crate::Input::Turbo, egui_ctx.input(|i| i.key_down(egui::Key::Space))) {
                 gb.do_input(crate::Input::Turbo);
+            }
+            if debounce_ref.debounce(crate::Input::Pause, egui_ctx.input(|i| i.key_down(egui::Key::B))) {
+                gb.do_input(crate::Input::Pause);
+            }
+            if debounce_ref.debounce(crate::Input::LineStep, egui_ctx.input(|i| i.key_down(egui::Key::H))) {
+                gb.do_input(crate::Input::LineStep);
+            }
+            if debounce_ref.debounce(crate::Input::FrameStep, egui_ctx.input(|i| i.key_down(egui::Key::N))) {
+                gb.do_input(crate::Input::FrameStep);
+            }
+            if debounce_ref.debounce(crate::Input::Continue, egui_ctx.input(|i| i.key_down(egui::Key::M))) {
+                gb.do_input(crate::Input::Continue);
             }
         });
         let mut pixels: Vec<u8> = Vec::new();

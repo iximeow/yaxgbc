@@ -1219,6 +1219,9 @@ struct GBC {
     trace_io: bool,
     show_sprite_debug_panel: bool,
     turbo: bool,
+    pause: bool,
+    frame_step: bool,
+    line_step: bool,
 }
 
 struct MemoryMapping<'system> {
@@ -1323,7 +1326,11 @@ impl MemoryBanks for MemoryMapping<'_> {
                     self.state.management_bits[address as usize]
                 } else if address < 0x180 {
                     if self.verbose || self.trace_io {
-                        eprintln!("loading ${:3x}", address);
+                        if let Some(name) = reg_name(address as usize) {
+                            eprintln!("loading {}", name);
+                        } else {
+                            eprintln!("loading ${:04x}", address);
+                        }
                     }
                     let reg = address as usize;
                     let v = if (reg >= APU_MIN_REG && reg <= APU_MAX_REG) || reg == PCM12 || reg == PCM34 {
@@ -1460,10 +1467,14 @@ impl MemoryBanks for MemoryMapping<'_> {
             self.state.management_bits[addr as usize - 0xfe00] = value;
         } else if addr < 0xff80 {
             // "i/o registers"
-            if self.verbose || self.trace_io {
-                eprintln!("set ${:04x}=${:02x}", addr, value);
-            }
             let reg = addr as usize - 0xfe00;
+            if self.verbose || self.trace_io {
+                if let Some(name) = reg_name(reg) {
+                    eprintln!("set {}=${:02x}", name, value);
+                } else {
+                    eprintln!("set ${:04x}=${:02x}", addr, value);
+                }
+            }
             if (reg >= APU_MIN_REG && reg <= APU_MAX_REG) || reg == PCM12 || reg == PCM34 {
                 self.state.apu.store(reg, value);
             } else if reg == JOYP {
@@ -1853,6 +1864,10 @@ enum Input {
     Left, Right, Up, Down,
     RenderSpriteDebugPanelToggle,
     NextTileDebugBank,
+    FrameStep,
+    LineStep,
+    Pause,
+    Continue,
     TraceIO,
     Reset,
     Turbo,
@@ -1886,6 +1901,9 @@ impl GBC {
             trace_io: false,
             show_sprite_debug_panel: false,
             turbo: false,
+            pause: false,
+            frame_step: false,
+            line_step: false,
         }
     }
 
@@ -1971,6 +1989,20 @@ impl GBC {
                 self.state.lcd.tile_debug_base += 1;
                 self.state.lcd.tile_debug_base %= 3;
             }
+            Input::Pause => {
+                self.pause = true;
+            }
+            Input::Continue => {
+                self.pause = false;
+            }
+            Input::FrameStep => {
+                self.pause = false;
+                self.frame_step = true;
+            }
+            Input::LineStep => {
+                self.pause = false;
+                self.line_step = true;
+            }
             Input::TraceIO => {
                 self.trace_io ^= true;
             }
@@ -2050,17 +2082,32 @@ impl GBC {
             clocks
         };
 
+        let prev_mode = self.state.lcd.mode;
+
         let (vblank_int, stat_int) = self.state.lcd.advance_clock(&self.state.vram, self.state.management_bits[STAT], self.state.management_bits[LYC], system_clocks, self.state.management_bits[SCX], self.state.management_bits[SCY], self.state.management_bits[WX], self.state.management_bits[WY]);
+
+        let now_mode = self.state.lcd.mode;
+        if self.line_step {
+            if prev_mode == 3 && now_mode == 0 {
+                // just entered hblank
+                self.line_step = false;
+                self.pause = true;
+            }
+        }
         if vblank_int {
             if self.show_sprite_debug_panel {
                 self.state.lcd.render_sprite_debug(&self.state.vram, &mut self.sprite_debug_panel);
                 self.state.lcd.render_bg_debug(&self.state.vram, &mut self.sprite_debug_panel);
             }
-//            eprintln!("fire vblank interrupt at clock {}", self.clock);
+            if self.verbose {
+                eprintln!("fire vblank interrupt at clock {}", self.clock);
+            }
             self.state.management_bits[IF] |= 0b00001;
         }
         if stat_int {
-//            eprintln!("firing STAT lyc={:02x}, ly={:02x}", self.state.management_bits[LYC], self.lcd.ly);
+            if self.verbose {
+                eprintln!("firing STAT lyc={:02x}, ly={:02x}", self.state.management_bits[LYC], self.state.lcd.ly);
+            }
             self.state.management_bits[IF] |= 0b00010;
         }
 // do not join lcd.mode and STAT eagerly, these are now fixed up on read
@@ -2072,10 +2119,18 @@ impl GBC {
 //        self.state.management_bits[LY] = 0x90;
         self.state.apu.advance_clock(self.audio_sink.as_ref().clone(), system_clocks, self.turbo);
 
+        if vblank_int && self.frame_step {
+            self.frame_step = false;
+            self.pause = true;
+        }
+
         self.clock = new_clock;
     }
 
     fn run(&mut self) -> u64 {
+        if self.pause {
+            return 0;
+        }
         let mut res = self.state.management_bits[JOYP] & 0b0011_0000;
         if self.state.management_bits[JOYP] & 0b0001_0000 == 0 {
             res |= self.input_directions ^ 0b0000_1111;
@@ -2972,5 +3027,75 @@ mod test {
             memory.store(0x2000, 0);
             assert_eq!(memory.load(0x4001), 1);
         })
+    }
+}
+
+fn reg_name(reg: usize) -> Option<&'static str> {
+    match reg {
+        0x100 => Some("JOYP"),
+        0x101 => Some("SB"),
+        0x102 => Some("SC"),
+        0x104 => Some("DIV"),
+        0x105 => Some("TIMA"),
+        0x106 => Some("TMA"),
+        0x107 => Some("TAC"),
+        0x10f => Some("IF"),
+        0x110 => Some("APU_MIN_REG"),
+        0x13f => Some("APU_MAX_REG"),
+        0x110 => Some("NR10"),
+        0x111 => Some("NR11"),
+        0x112 => Some("NR12"),
+        0x113 => Some("NR13"),
+        0x114 => Some("NR14"),
+        0x116 => Some("NR21"),
+        0x117 => Some("NR22"),
+        0x118 => Some("NR23"),
+        0x119 => Some("NR24"),
+        0x11a => Some("NR30"),
+        0x11b => Some("NR31"),
+        0x11c => Some("NR32"),
+        0x11d => Some("NR33"),
+        0x11e => Some("NR34"),
+        0x120 => Some("NR41"),
+        0x121 => Some("NR42"),
+        0x122 => Some("NR43"),
+        0x123 => Some("NR44"),
+        0x130 => Some("WAVE_RAM_START"),
+        0x13f => Some("WAVE_RAM_END"),
+        0x124 => Some("NR50"),
+        0x125 => Some("NR51"),
+        0x126 => Some("NR52"),
+        0x140 => Some("LCDC"),
+        0x141 => Some("STAT"),
+        0x142 => Some("SCY"),
+        0x143 => Some("SCX"),
+        0x144 => Some("LY"),
+        0x145 => Some("LYC"),
+        0x146 => Some("DMA"),
+        0x147 => Some("BGP"),
+        0x148 => Some("OBP0"),
+        0x149 => Some("OBP1"),
+        0x14a => Some("WY"),
+        0x14b => Some("WX"),
+        0x14c => Some("KEY0"),
+        0x14d => Some("KEY1"),
+        0x14f => Some("VBK"),
+        0x150 => Some("BANK"),
+        0x151 => Some("HDMA1"),
+        0x152 => Some("HDMA2"),
+        0x153 => Some("HDMA3"),
+        0x154 => Some("HDMA4"),
+        0x155 => Some("HDMA5"),
+        0x156 => Some("RP"),
+        0x168 => Some("BGPI"),
+        0x169 => Some("BGPD"),
+        0x16a => Some("OBPI"),
+        0x16b => Some("OBPD"),
+        0x16c => Some("OPRI"),
+        0x170 => Some("SVBK"),
+        0x176 => Some("PCM12"),
+        0x177 => Some("PCM34"),
+        0x1ff => Some("IE"),
+        _ => None,
     }
 }
