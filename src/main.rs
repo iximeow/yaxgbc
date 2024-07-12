@@ -901,6 +901,12 @@ impl Lcd {
                             continue;
                         }
 
+                        if x_end == 0 {
+                            self.current_oam_penalty += 11;
+                        } else {
+                            self.current_oam_penalty += 6;
+                        }
+
                         if self.ly == 88 {
 //                            eprintln!("item {} x_end,y_end[height={}]=({}, {}), selected line {} of tile {}", i, sprite_height, x_end, y_end, selected_line, self.oam[object_addr + 2]);
                         }
