@@ -244,6 +244,7 @@ struct Lcd {
     lcd_clock: u64,
     current_line_start: u64,
     current_draw_start: u64,
+    current_oam_penalty: u64,
     initial_scx: u8,
     // when, in dots, we'll be at the next line. this is the end of the current line's HBlank.
     next_line: u64,
@@ -376,6 +377,7 @@ impl Lcd {
             lcd_clock: 0,
             current_line_start: 0,
             current_draw_start: 0,
+            current_oam_penalty: 0,
             initial_scx: 0,
             next_line: Self::LINE_TIME,
             next_draw_time: Self::SCREEN_TIME,
@@ -786,8 +788,12 @@ impl Lcd {
             // ok, line's done and we're resetting to mode 2 (exiting mode 0)
 //            eprintln!("line {} done", self.ly);
             if self.ly < 144 {
+                if self.curr_background_pixel != 160 {
+                    self.advance_background(&vram, self.curr_background_pixel, 160, scy, scx, wy, wx);
+                    self.curr_background_pixel = 160;
+                }
+
                 for px in 0..(self.curr_background_pixel as usize) {
-                    assert!(self.curr_background_pixel == 160);
                     let addr = (self.ly as usize * 160 + px) * 4;
                     let px_rgba = if self.dmg_compat {
                         if self.lcdc & 1 == 0 {
@@ -829,8 +835,10 @@ impl Lcd {
             }
 
             self.current_line_start += (line_time / Self::LINE_TIME) * Self::LINE_TIME;
+            self.current_oam_penalty = 0;
             if self.window_visible == 0b11 {
                 self.window_y += 1;
+                self.window_visible = 0;
             }
             self.ly += 1;
             if self.ly >= wy {
@@ -866,6 +874,10 @@ impl Lcd {
                 self.mode = 2;
 
                 if prior_mode != self.mode {
+                    #[cfg(feature="trace-io")]
+                    if self.trace_io {
+                        eprintln!("enter mode 2 at {}", self.lcd_clock);
+                    }
                     self.initial_scx = scx;
                     // do a full OAM scan up front. there might be benefits to driving the OAM reads in
                     // a more cycle-accurate manner, but i'm skimping on that for now.
@@ -928,243 +940,245 @@ impl Lcd {
                     }
                     */
                 }
-            } else if line_time < 80 + 168 {
-                // the exact timing here depends on how many OBJs were found. 168 is a minimum.
+            } else if line_time < 80 + 172 + self.current_oam_penalty {
+                // the exact timing here depends on how many OBJs were found. 172 is a minimum.
                 let prior_mode = self.mode;
                 self.mode = 3;
 
                 // we just entered mode 3, draw the pixels. again, this should be made pixel-accurate in
                 // the future
                 if self.mode != prior_mode {
-                    for item in self.oam_scan_items.iter().rev() {
-                        if item.x >= 168 {
-                            continue;
-                        }
-                        let bank = if self.dmg_compat {
-                            0
-                        } else {
-                            (item.oam_attrs.vram_bank() as usize * 0x2000) ^ (if self.toggle_oam_sprite_bank { 0x2000 } else { 0 })
-                        };
-                        let oam_tile_addr = bank + item.tile_index as usize * 16;
-                        let y_addr = if item.oam_attrs.flip_vertical() {
-                            let oam_height = if self.lcdc & 0b100 == 0 {
-                                8
-                            } else {
-                                16
-                            };
-                            (oam_height - 1) - item.selected_line
-                        } else {
-                            item.selected_line
-                        };
-                        let (tile_row_lo, tile_row_hi) = if y_addr < 8 {
-                            let tile_line = y_addr;
-                            let oam_tile_data = &vram[oam_tile_addr..][..16];
-                            let lo = oam_tile_data[tile_line as usize * 2];
-                            let hi = oam_tile_data[tile_line as usize * 2 + 1];
-                            (lo, hi)
-                        } else {
-                            let tile_line = y_addr - 8;
-                            let oam_tile_data = &vram[oam_tile_addr + 16..][..16];
-                            let lo = oam_tile_data[tile_line as usize * 2];
-                            let hi = oam_tile_data[tile_line as usize * 2 + 1];
-                            (lo, hi)
-                        };
-
-                        for x in 0..8 {
-                            let x_addr = x as i32 + (item.x as i32 - 8);
-                            if x_addr < 0 || x_addr >= 160 {
-                                continue;
-                            }
-
-                            let x = if item.oam_attrs.flip_horizontal() {
-                                7 - x
-                            } else {
-                                x
-                            };
-
-                            let px =
-                                (((tile_row_hi >> (7 - x)) & 1) << 1) |
-                                (((tile_row_lo >> (7 - x)) & 1) << 0);
-
-                            if px != 0 {
-                                let rgb = if self.dmg_compat {
-                                    Self::px2grey(&self.object_palette_data_cache, item.oam_attrs.palette_number(), px)
-                                } else {
-                                    Self::px2rgba(&self.object_palette_data_cache, item.oam_attrs.bg_palette(), px)
-                                };
-                                /*
-                                const COLORS: &[u32] = &[
-                                    0x0000ff, 0x000080, 0x000040,
-                                    0x00ff00, 0x008000, 0x004000,
-                                    0xff0000, 0x800000, 0x400000,
-                                    0x00ffff, 0x00ff80, 0x00ff40,
-                                    0x0080ff, 0x008080, 0x008040,
-                                    0x0040ff, 0x004080, 0x004040,
-                                    0xff00ff, 0xff0080, 0xff0040,
-                                    0x8000ff, 0x800080, 0x800040,
-                                    0x4000ff, 0x400080, 0x400040,
-                                ];
-                                let px = COLORS[(px as usize) % COLORS.len()].wrapping_mul(item.x as u32 + y_addr as u32);
-                                */
-
-                                let can_overwrite = if !self.dmg_compat {
-                                    // is oam_pri unset? then we are the first oam item to be drawn
-                                    // on this pixel and have highest priority. we will set oam_pri
-                                    // and prevent future items from overwriting us.
-                                    self.oam_pixels[x_addr as usize].oam_pri == 255
-                                } else {
-                                    // oam_pri is initialized to an impossibly high value: first
-                                    // write always wins, later writes depend on oam x-value...
-                                    item.x <= self.oam_pixels[x_addr as usize].oam_pri
-                                };
-
-                                if can_overwrite && self.oam_enable_real {
-                                    self.oam_pixels[x_addr as usize] = Pixel {
-                                        pixel: px,
-                                        rgb,
-                                        bg_priority: item.oam_attrs.bg_priority(),
-                                        oam_pri: if !self.dmg_compat {
-                                            1
-                                        } else {
-                                            item.x
-                                        },
-                                        _pad: 0,
-                                    };
-                                }
-//                            } else {
-//                                self.oam_pixels[x_addr as usize] = Some(0xff0000);
-                            }
-                        }
+                    #[cfg(feature="trace-io")]
+                    if self.trace_io {
+                        eprintln!("enter mode 3 at {}", self.lcd_clock);
                     }
+                    // because video memory is locked in mode 3 we can just draw everything
+                    // upfront... probably?
+                    //
+                    // TODO: if lcdc.2 is toggled during a line, do oam sprite sizes change?
+                    self.draw_oam(&vram);
 
-    //                eprintln!("{} sprites to draw", self.oam_scan_items.len());
                     self.curr_background_pixel = 0;
-                    let tile_base = self.background_tile_base();
-                    let window_tile_base = self.window_tile_base();
-//                    eprintln!("tile base: {:04x}", tile_base);
-//                    eprintln!("tile y: {}.{}", self.ly / 8, self.ly % 8);
-                    let background_y = scy.wrapping_add(self.ly);
-                    let background_x = scx + 0;
-                    let tile_y = (background_y / 8) as u16;
-                    let tile_yoffs = background_y as u16 % 8;
-                    // if `ly < wy` this will be `None`, and our sign that we're not drawing the
-                    // window on this line.
-                    // TODO: handle window ly separately given the window might not always be
-                    // visible..?
-                    let window_y = if self.window_enable() && wx <= 166 {
-                        if self.ly >= wy {
-                            Some(self.window_y)
-                        } else {
-                            None
-                        }
-                    } else {
-                        // and if the window is not enabled, `None` here bypasses later logic
-                        None
-                    };
-                    let window_coords = window_y.map(|window_y| {
-                        ((window_y / 8) as u16, (window_y as u16 % 8))
-                    });
-                    for i in 0..160u8 {
-                        let (line_x, tile_yoffs, tile_data, attributes) = window_coords.and_then(|(window_y, window_y_offset)| {
-                            if i + 7 < wx {
-                                // the window y-line was visible, but still too far left to draw
-                                // it.
-                                return None;
-                            } else {
-                                self.window_visible |= 0b10;
-                            }
-
-                            let window_x = i - wx + 7;
-                            let window_tile_x = (window_x / 8) as u16;
-                            let window_tile_nr = window_y * 32 + window_tile_x;
-                            let (tile_data, attributes) = self.window_tile_lookup_by_nr(vram, window_tile_nr);
-                            Some((window_x, window_y_offset, tile_data, attributes))
-                        }).unwrap_or_else(|| {
-                            // NOTE: if the screen is scrolled such that x would overflow past the end
-                            // of the tile map, x waps back around to the left. i think.
-                            let line_x = i.wrapping_add(background_x);
-                            let tile_x = (line_x / 8) as u16;
-                            let tile_nr = tile_y * 32 + tile_x;
-                            let (tile_data, attributes) = self.tile_lookup_by_nr(vram, tile_nr);
-                            if self.trace_io && i % 8 == 0 && background_x % 8 == 0 {
-                                let tile_map_base = self.background_tile_base() as usize;
-                                let tile_id = vram[tile_map_base + tile_nr as usize];
-                                if tile_id != 40 {
-                                    eprintln!("looking up tile number {} (at ({}, {})) -> {}", tile_nr, tile_x, tile_y, tile_id);
-                                }
-                            }
-                            (line_x, tile_yoffs, tile_data, attributes)
-                        });
-
-                        let y_idx = if attributes.flip_vertical() {
-                            7 - tile_yoffs
-                        } else {
-                            tile_yoffs
-                        };
-                        let tile_row_lo = tile_data[y_idx as usize * 2];
-                        let tile_row_hi = tile_data[y_idx as usize * 2 + 1];
-                        let tile_xoffs = (line_x % 8);
-                        let x_idx = if attributes.flip_horizontal() {
-                            7 - tile_xoffs
-                        } else {
-                            tile_xoffs
-                        };
-                        let px =
-                            (((tile_row_hi >> (7 - x_idx)) & 1) << 1) |
-                            (((tile_row_lo >> (7 - x_idx)) & 1) << 0);
-
-                        /*
-                        if self.ly > 42 && self.ly < 49 {
-                            eprintln!("px in = {}", px);
-                        }
-                        */
-                        let rgb = Self::px2rgba(&self.background_palette_data_cache, attributes.bg_palette(), px);
-                        /*
-                        if self.ly > 42 && self.ly < 49 {
-                            eprintln!("px out = {} via palette {}, tile x,y=({}, {})", px, attributes.bg_palette(), tile_x, tile_y);
-                        }
-                        */
-
-                        let px = Pixel {
-                            pixel: px,
-                            rgb,
-                            bg_priority: attributes.priority(),
-                            oam_pri: 0,
-                            _pad: 0,
-                        };
-
-                        // either the window is drawn (-> window_enable_real) or the background is
-                        // permitted. whatever pixel here is one we're ok drawing.
-                        if window_coords.is_some() || self.background_enable_real {
-                            self.background_pixels[self.curr_background_pixel as usize] = px;
-                        } else {
-                            // background is disabled and it was drawn, or window is disabled and
-                            // it was drawn.
-                        }
-                        self.curr_background_pixel += 1;
-                    }
-/*
-                    if self.background_pixels.iter().all(|px| px.pixel == 0) {
-//                        eprintln!("clear line... {}", self.ly);
-                        self.background_pixels[0] = Pixel {
-                            pixel: 1,
-                            rgb: 0x00_ff_00_00,
-                            bg_priority: true,
-                            priority: true,
-                        };
-                    } else {
-//                        eprintln!("normal line");
-                    }
-*/
-                    assert_eq!(self.curr_background_pixel, 160);
                 }
-            } else if line_time < 80 + 168 + 208 {
+
+                let end_px = std::cmp::min(self.curr_background_pixel + clocks as u8,  160);
+
+                self.advance_background(&vram, self.curr_background_pixel, end_px, scy, scx, wy, wx);
+                self.curr_background_pixel = end_px;
+            } else if line_time < Self::LINE_TIME {
                 if self.mode != 0 && (lcd_stat & 0b0000_1000 != 0) {
+                    #[cfg(feature="trace-io")]
+                    if self.trace_io {
+                        eprintln!("enter mode 0 at {}", self.lcd_clock);
+                    }
+                    self.advance_background(&vram, self.curr_background_pixel, 160, scy, scx, wy, wx);
+                    self.curr_background_pixel = 160;
+
                     should_interrupt = true;
                 }
                 self.mode = 0;
             }
             (false, should_interrupt)
+        }
+    }
+
+    fn advance_background(&mut self, vram: &[u8], start: u8, end: u8, scy: u8, scx: u8, wy: u8, wx: u8) {
+        let tile_base = self.background_tile_base();
+        let window_tile_base = self.window_tile_base();
+
+        let background_y = scy.wrapping_add(self.ly);
+        let background_x = scx + 0;
+        let tile_y = (background_y / 8) as u16;
+        let tile_yoffs = background_y as u16 % 8;
+
+        // if `ly < wy` this will be `None`, and our sign that we're not drawing the
+        // window on this line.
+        // TODO: handle window ly separately given the window might not always be
+        // visible..?
+        let window_y = if self.window_enable() && wx <= 166 {
+            if self.ly >= wy {
+                Some(self.window_y)
+            } else {
+                None
+            }
+        } else {
+            // and if the window is not enabled, `None` here bypasses later logic
+            None
+        };
+        let window_coords = window_y.map(|window_y| {
+            ((window_y as u16 / 8), (window_y as u16 % 8))
+        });
+        for i in start..end {
+            let (line_x, tile_yoffs, tile_data, attributes) = window_coords.and_then(|(window_y, window_y_offset)| {
+                if i + 7 < wx {
+                    // the window y-line was visible, but still too far left to draw
+                    // it.
+                    return None;
+                } else {
+                    self.window_visible |= 0b10;
+                }
+
+                let window_x = i - wx + 7;
+                let window_tile_x = (window_x / 8) as u16;
+                let window_tile_nr = window_y * 32 + window_tile_x;
+                let (tile_data, attributes) = self.window_tile_lookup_by_nr(vram, window_tile_nr);
+                Some((window_x, window_y_offset, tile_data, attributes))
+            }).unwrap_or_else(|| {
+                // NOTE: if the screen is scrolled such that x would overflow past the end
+                // of the tile map, x waps back around to the left. i think.
+                let line_x = i.wrapping_add(background_x);
+                let tile_x = (line_x / 8) as u16;
+                let tile_nr = tile_y * 32 + tile_x;
+                let (tile_data, attributes) = self.tile_lookup_by_nr(vram, tile_nr);
+                #[cfg(feature="trace-io")]
+                if self.trace_io && i % 8 == 0 && background_x % 8 == 0 {
+                    let tile_map_base = self.background_tile_base() as usize;
+                    let tile_id = vram[tile_map_base + tile_nr as usize];
+                    if tile_id != 40 {
+                        eprintln!("looking up tile number {} (at ({}, {})) -> {}", tile_nr, tile_x, tile_y, tile_id);
+                    }
+                }
+                (line_x, tile_yoffs, tile_data, attributes)
+            });
+
+            let y_idx = if attributes.flip_vertical() {
+                7 - tile_yoffs
+            } else {
+                tile_yoffs
+            };
+            let tile_row_lo = tile_data[y_idx as usize * 2];
+            let tile_row_hi = tile_data[y_idx as usize * 2 + 1];
+            let tile_xoffs = (line_x % 8);
+            let x_idx = if attributes.flip_horizontal() {
+                7 - tile_xoffs
+            } else {
+                tile_xoffs
+            };
+            let px =
+                (((tile_row_hi >> (7 - x_idx)) & 1) << 1) |
+                (((tile_row_lo >> (7 - x_idx)) & 1) << 0);
+
+            let rgb = Self::px2rgba(&self.background_palette_data_cache, attributes.bg_palette(), px);
+
+            let px = Pixel {
+                pixel: px,
+                rgb,
+                bg_priority: attributes.priority(),
+                oam_pri: 0,
+                _pad: 0,
+            };
+
+            // either the window is drawn (-> window_enable_real) or the background is
+            // permitted. whatever pixel here is one we're ok drawing.
+            if window_coords.is_some() || self.background_enable_real {
+                self.background_pixels[i as usize] = px;
+            } else {
+                // background is disabled and it was drawn, or window is disabled and
+                // it was drawn.
+            }
+        }
+    }
+
+    fn draw_oam(&mut self, vram: &[u8]) {
+        for item in self.oam_scan_items.iter().rev() {
+            if item.x >= 168 {
+                continue;
+            }
+            let bank = if self.dmg_compat {
+                0
+            } else {
+                (item.oam_attrs.vram_bank() as usize * 0x2000) ^ (if self.toggle_oam_sprite_bank { 0x2000 } else { 0 })
+            };
+            let oam_tile_addr = bank + item.tile_index as usize * 16;
+            let y_addr = if item.oam_attrs.flip_vertical() {
+                let oam_height = if self.lcdc & 0b100 == 0 {
+                    8
+                } else {
+                    16
+                };
+                (oam_height - 1) - item.selected_line
+            } else {
+                item.selected_line
+            };
+            let (tile_row_lo, tile_row_hi) = if y_addr < 8 {
+                let tile_line = y_addr;
+                let oam_tile_data = &vram[oam_tile_addr..][..16];
+                let lo = oam_tile_data[tile_line as usize * 2];
+                let hi = oam_tile_data[tile_line as usize * 2 + 1];
+                (lo, hi)
+            } else {
+                let tile_line = y_addr - 8;
+                let oam_tile_data = &vram[oam_tile_addr + 16..][..16];
+                let lo = oam_tile_data[tile_line as usize * 2];
+                let hi = oam_tile_data[tile_line as usize * 2 + 1];
+                (lo, hi)
+            };
+
+            for x in 0..8 {
+                let x_addr = x as i32 + (item.x as i32 - 8);
+                if x_addr < 0 || x_addr >= 160 {
+                    continue;
+                }
+
+                let x = if item.oam_attrs.flip_horizontal() {
+                    7 - x
+                } else {
+                    x
+                };
+
+                let px =
+                    (((tile_row_hi >> (7 - x)) & 1) << 1) |
+                    (((tile_row_lo >> (7 - x)) & 1) << 0);
+
+                if px != 0 {
+                    let rgb = if self.dmg_compat {
+                        Self::px2grey(&self.object_palette_data_cache, item.oam_attrs.palette_number(), px)
+                    } else {
+                        Self::px2rgba(&self.object_palette_data_cache, item.oam_attrs.bg_palette(), px)
+                    };
+                    /*
+                    const COLORS: &[u32] = &[
+                        0x0000ff, 0x000080, 0x000040,
+                        0x00ff00, 0x008000, 0x004000,
+                        0xff0000, 0x800000, 0x400000,
+                        0x00ffff, 0x00ff80, 0x00ff40,
+                        0x0080ff, 0x008080, 0x008040,
+                        0x0040ff, 0x004080, 0x004040,
+                        0xff00ff, 0xff0080, 0xff0040,
+                        0x8000ff, 0x800080, 0x800040,
+                        0x4000ff, 0x400080, 0x400040,
+                    ];
+                    let px = COLORS[(px as usize) % COLORS.len()].wrapping_mul(item.x as u32 + y_addr as u32);
+                    */
+
+                    let can_overwrite = if !self.dmg_compat {
+                        // is oam_pri unset? then we are the first oam item to be drawn
+                        // on this pixel and have highest priority. we will set oam_pri
+                        // and prevent future items from overwriting us.
+                        self.oam_pixels[x_addr as usize].oam_pri == 255
+                    } else {
+                        // oam_pri is initialized to an impossibly high value: first
+                        // write always wins, later writes depend on oam x-value...
+                        item.x <= self.oam_pixels[x_addr as usize].oam_pri
+                    };
+
+                    if can_overwrite && self.oam_enable_real {
+                        self.oam_pixels[x_addr as usize] = Pixel {
+                            pixel: px,
+                            rgb,
+                            bg_priority: item.oam_attrs.bg_priority(),
+                            oam_pri: if !self.dmg_compat {
+                                1
+                            } else {
+                                item.x
+                            },
+                            _pad: 0,
+                        };
+                    }
+//                            } else {
+//                                self.oam_pixels[x_addr as usize] = Some(0xff0000);
+                }
+            }
         }
     }
 }
@@ -1350,11 +1364,12 @@ impl MemoryBanks for MemoryMapping<'_> {
                     // "not usable"
                     self.state.management_bits[address as usize]
                 } else if address < 0x180 {
+                    #[cfg(feature="trace-io")]
                     if self.verbose || self.trace_io {
                         if let Some(name) = reg_name(address as usize) {
-//                            eprintln!("loading {}", name);
+                            eprintln!("loading {}", name);
                         } else {
-//                            eprintln!("loading ${:04x}", address);
+                            eprintln!("loading ${:04x}", address);
                         }
                     }
                     let reg = address as usize;
@@ -1380,12 +1395,14 @@ impl MemoryBanks for MemoryMapping<'_> {
                         self.state.lcd.object_palettes_data[idx as usize]
                     } else if reg == IF {
                         let v = self.state.management_bits[reg];
+                        #[cfg(feature="trace-io")]
                         if self.verbose || self.trace_io {
                             eprintln!("getting IF=${:02x}", v);
                         }
                         v
                     } else if reg == IE {
                         let v = self.state.management_bits[reg];
+                        #[cfg(feature="trace-io")]
                         if self.verbose || self.trace_io {
                             eprintln!("getting IE=${:02x}", v);
                         }
@@ -1394,6 +1411,7 @@ impl MemoryBanks for MemoryMapping<'_> {
                         // self.state.management_bits[reg]
                         self.state.lcd.ly
                     } else if reg == LCDC {
+                        #[cfg(feature="trace-io")]
                         if self.verbose || self.trace_io {
                             eprintln!("getting LCDC=${:02x}", self.state.lcd.lcdc);
                         }
@@ -1442,6 +1460,7 @@ impl MemoryBanks for MemoryMapping<'_> {
                     } else {
                         //panic!("unhandled load {:04x}", reg);
                         let v = self.state.management_bits[reg];
+                        #[cfg(feature="trace-io")]
                         if self.verbose || self.trace_io {
                             eprintln!("get ${:04x} (=${:02x})", address, v);
                         }
@@ -1450,11 +1469,6 @@ impl MemoryBanks for MemoryMapping<'_> {
                     v
                 } else if address < 0x1ff {
                     // "high ram (HRAM)"
-                    if address == 0x018e {
-                        eprintln!("load ff8e (${:02x})", self.state.management_bits[address as usize]);
-                    } else if address == 0x018f {
-                        eprintln!("load ff8f (${:02x})", self.state.management_bits[address as usize]);
-                    }
                     self.state.management_bits[address as usize]
                 } else {
                     // "interrupt enable register"
@@ -1498,6 +1512,7 @@ impl MemoryBanks for MemoryMapping<'_> {
         } else if addr < 0xff80 {
             // "i/o registers"
             let reg = addr as usize - 0xfe00;
+            #[cfg(feature="trace-io")]
             if self.verbose || self.trace_io {
                 if let Some(name) = reg_name(reg) {
                     eprintln!("set {}=${:02x}", name, value);
@@ -2043,8 +2058,11 @@ impl GBC {
                 self.line_step = true;
             }
             Input::TraceIO => {
-                self.trace_io ^= true;
-                self.state.lcd.trace_io ^= true;
+                #[cfg(feature="trace-io")]
+                {
+                    self.trace_io ^= true;
+                    self.state.lcd.trace_io ^= true;
+                }
             }
             Input::Turbo => {
                 self.turbo ^= true;
