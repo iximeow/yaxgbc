@@ -1660,11 +1660,6 @@ impl MemoryBanks for MemoryMapping<'_> {
             }
         } else if addr < 0xffff {
             // "high ram (HRAM)"
-            if addr == 0xff8e {
-                eprintln!("store ${:02x} to ff8e", value);
-            } else if addr == 0xff8f {
-                eprintln!("store ${:02x} to ff8f", value);
-            }
             self.state.management_bits[addr as usize - 0xfe00] = value;
         } else {
             // "interrupt enable register"
@@ -2167,12 +2162,14 @@ impl GBC {
                 self.state.lcd.render_sprite_debug(&self.state.vram, &mut self.sprite_debug_panel);
                 self.state.lcd.render_bg_debug(&self.state.vram, &mut self.sprite_debug_panel);
             }
+            #[cfg(feature="trace-io")]
             if self.verbose {
                 eprintln!("fire vblank interrupt at clock {}", self.clock);
             }
             self.state.management_bits[IF] |= 0b00001;
         }
         if stat_int {
+            #[cfg(feature="trace-io")]
             if self.verbose {
                 eprintln!("firing STAT lyc={:02x}, ly={:02x}", self.state.management_bits[LYC], self.state.lcd.ly);
             }
@@ -2216,105 +2213,8 @@ impl GBC {
             trace_io: self.trace_io,
         };
 
-        /*
-        if self.verbose {
-//        if true {
-            let mut reader = BankReader::read_at(&mut mem_map, self.cpu.pc);
-            let decoder = yaxpeax_sm83::InstDecoder::default();
-
-            let instr = decoder.decode(&mut reader).unwrap();
-            eprintln!("pc={:#04x} {}", self.cpu.pc, instr.decorate(&self.cpu, &mem_map));
-            let translated = mem_map.translate_address(self.cpu.pc);
-            if translated.segment == SEGMENT_CART {
-                eprintln!("  cart addr: {}", mem_map.cart.translate_address(self.cpu.pc));
-            } else {
-                eprintln!("  addr: {}", translated);
-            }
-//            eprintln!("ram (first 512b): {:?}", &mem_map.ram[0..512]);
-//            eprintln!("  {:?}", instr);
-        }
-        */
-
         let pc_before = self.cpu.pc;
-        // if self.cpu.pc == 0xa0b {
-        if mem_map.load(pc_before) == 0xe0 && mem_map.load(pc_before + 1) == 0x8e {
-            self.cpu.print_branch_trace();
-//            self.verbose = true;
-        }
-        if pc_before == 0x940 {
-            eprintln!("at 940...");
-            eprintln!("clock: {}", self.clock);
-            eprintln!("{:?}", self.cpu);
-            eprintln!("----");
-        }
-        // stop tracing at reti
-        if mem_map.load(pc_before) == 0xd9 {
-            //self.verbose = false;
-        }
-
-        if mem_map.load(pc_before) == 0xf0 && mem_map.load(pc_before + 1) == 0x8e {
-            self.cpu.print_branch_trace();
-            self.verbose = false;
-        }
         let clocks = self.cpu.step(&mut mem_map);
-
-        if self.cpu.pc == 0xa0b {
-            eprintln!("vblank at clock: {}", self.clock);
-            eprint!("{:?}", &self.cpu);
-            let mut reader = BankReader::read_at(&mut mem_map, self.cpu.pc);
-            let decoder = yaxpeax_sm83::InstDecoder::default();
-
-            let instr = decoder.decode(&mut reader).unwrap();
-            eprintln!("pc={:#04x} {}", self.cpu.pc, instr.decorate(&self.cpu, &mem_map));
-        }
-
-        /*
-        if !self.in_boot && false {
-            eprintln!(
-                "A:{:02X} F:{:02X} B:{:02X} C:{:02X} D:{:02X} E:{:02X} H:{:02X} L:{:02X} SP:{:04X} PC:{:04X} PCMEM:{:02X},{:02X},{:02X},{:02X}",
-                self.cpu.af[1],
-                self.cpu.af[0],
-                self.cpu.bc[1],
-                self.cpu.bc[0],
-                self.cpu.de[1],
-                self.cpu.de[0],
-                self.cpu.hl[1],
-                self.cpu.hl[0],
-                self.cpu.sp,
-                self.cpu.pc,
-                mem_map.load(self.cpu.pc),
-                mem_map.load(self.cpu.pc + 1),
-                mem_map.load(self.cpu.pc + 2),
-                mem_map.load(self.cpu.pc + 3),
-            );
-        }
-        */
-        /*
-        if self.cpu.sp >= 0xfe00 && self.cpu.sp < 0xff80 {
-            panic!("nonsense sp: ${:04x}", self.cpu.sp);
-        }
-        */
-        /*
-        if pc_before == self.cpu.pc {
-            panic!("loop detected");
-        }
-        */
-        /*
-        if self.cpu.pc == 0x1c2 {
-            eprintln!("pc: {}", mem_map.translate_address(self.cpu.pc));
-            eprintln!("rom addr: {}", mem_map.cart.translate_address(self.cpu.pc));
-            let mut reader = BankReader::read_at(&mut mem_map, self.cpu.pc);
-            let decoder = yaxpeax_sm83::InstDecoder::default();
-
-            let instr = decoder.decode(&mut reader).unwrap();
-            eprintln!("pc={:#04x} {}", self.cpu.pc, instr.decorate(&self.cpu, &mem_map));
-            self.cpu.step(&mut mem_map);
-//            eprintln!("{:?}", &self.cpu);
-//            eprintln!("emu breakpoint");
-//            self.verbose = true;
-//            self.cpu.verbose = true;
-        }
-        */
 
         if self.in_boot {
             let boot_rom_disable = mem_map.load(0xff50);
