@@ -11,7 +11,7 @@ use yaxpeax_sm83::SM83;
 use crate::{MemoryBanks, MemoryMapping};
 use crate::KEY1;
 
-const TRACE_DEPTH: usize = 40;
+const TRACE_DEPTH: usize = 10;
 
 #[derive(PartialEq, Clone, Copy)]
 pub struct BranchAddrs {
@@ -87,14 +87,6 @@ pub(crate) struct ExecutionEnvironment<'env, 'storage: 'env> {
     pub storage: &'env mut MemoryMapping<'storage>,
     pub clocks: u16,
     pub line_clock: u16,
-}
-
-impl ExecutionEnvironment<'_, '_> {
-    fn print_branch_trace(&self) {
-        for record in self.cpu.branch_trace.iter() {
-            eprintln!("  {:?}", record);
-        }
-    }
 }
 
 impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yaxpeax_sm83::DecodeHandler<T> for ExecutionEnvironment<'_, '_> {
@@ -1003,7 +995,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
     }
     fn on_rst(&mut self, imm: u8) -> Result<(), <SM83 as Arch>::DecodeError> {
         if imm == 0x38 {
-            self.print_branch_trace();
+            self.cpu.print_branch_trace();
             panic!("probably bug. do you really mean to run 0xff?");
         }
         self.cpu.push(self.storage, self.cpu.pc);
@@ -1055,6 +1047,12 @@ impl Cpu {
         }
     }
 
+    pub fn print_branch_trace(&self) {
+        for record in self.branch_trace.iter() {
+            eprintln!("  {:?}", record);
+        }
+    }
+
     fn trace_int<'storage: 'env, 'env>(&mut self, storage: &'env MemoryMapping<'storage>, from: u16, to: u16, int_bit: u8) {
         #[cfg(not(feature="branch-trace"))]
         return;
@@ -1078,7 +1076,7 @@ impl Cpu {
         #[cfg(not(feature="branch-trace"))]
         return;
 
-        if self.branch_trace.len() > TRACE_DEPTH {
+        while self.branch_trace.len() > TRACE_DEPTH {
             self.branch_trace.pop_back();
         }
         let from_linear = storage.recursive_translate(from);
@@ -1126,7 +1124,7 @@ impl Cpu {
         #[cfg(not(feature="branch-trace"))]
         return;
 
-        if self.branch_trace.len() > TRACE_DEPTH {
+        while self.branch_trace.len() > TRACE_DEPTH {
             self.branch_trace.pop_back();
         }
         let from_linear = storage.recursive_translate(from);
@@ -1173,7 +1171,7 @@ impl Cpu {
             to_linear,
         };
 
-        if self.branch_trace.len() > TRACE_DEPTH {
+        while self.branch_trace.len() > TRACE_DEPTH {
             self.branch_trace.pop_back();
         }
 

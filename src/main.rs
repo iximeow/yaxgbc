@@ -232,13 +232,14 @@ fn main() {
 struct Lcd {
     // HBlank, VBlank, Searching OAM, Transferring Data to LCD Controller
     mode: u8,
+    trace_io: bool,
     oam_enable_real: bool,
     background_enable_real: bool,
     window_enable_real: bool,
     dmg_compat: bool,
     lcdc: u8,
     ly: u8,
-    window_y: u8,
+    window_y: u16,
     window_visible: u8,
     lcd_clock: u64,
     current_line_start: u64,
@@ -363,6 +364,7 @@ impl Lcd {
     fn new() -> Self {
         Self {
             mode: 1,
+            trace_io: false,
             oam_enable_real: true,
             background_enable_real: true,
             window_enable_real: true,
@@ -1051,6 +1053,7 @@ impl Lcd {
                     // visible..?
                     let window_y = if self.window_enable() && wx <= 166 {
                         if self.ly >= wy {
+                            self.ly - wy
                             Some(self.window_y)
                         } else {
                             None
@@ -1084,6 +1087,13 @@ impl Lcd {
                             let tile_x = (line_x / 8) as u16;
                             let tile_nr = tile_y * 32 + tile_x;
                             let (tile_data, attributes) = self.tile_lookup_by_nr(vram, tile_nr);
+                            if self.trace_io && i % 8 == 0 && background_x % 8 == 0 {
+                                let tile_map_base = self.background_tile_base() as usize;
+                                let tile_id = vram[tile_map_base + tile_nr as usize];
+                                if tile_id != 40 {
+                                    eprintln!("looking up tile number {} (at ({}, {})) -> {}", tile_nr, tile_x, tile_y, tile_id);
+                                }
+                            }
                             (line_x, tile_data, attributes)
                         });
 
@@ -1343,9 +1353,9 @@ impl MemoryBanks for MemoryMapping<'_> {
                 } else if address < 0x180 {
                     if self.verbose || self.trace_io {
                         if let Some(name) = reg_name(address as usize) {
-                            eprintln!("loading {}", name);
+//                            eprintln!("loading {}", name);
                         } else {
-                            eprintln!("loading ${:04x}", address);
+//                            eprintln!("loading ${:04x}", address);
                         }
                     }
                     let reg = address as usize;
@@ -1441,6 +1451,11 @@ impl MemoryBanks for MemoryMapping<'_> {
                     v
                 } else if address < 0x1ff {
                     // "high ram (HRAM)"
+                    if address == 0x018e {
+                        eprintln!("load ff8e (${:02x})", self.state.management_bits[address as usize]);
+                    } else if address == 0x018f {
+                        eprintln!("load ff8f (${:02x})", self.state.management_bits[address as usize]);
+                    }
                     self.state.management_bits[address as usize]
                 } else {
                     // "interrupt enable register"
@@ -1631,6 +1646,11 @@ impl MemoryBanks for MemoryMapping<'_> {
             }
         } else if addr < 0xffff {
             // "high ram (HRAM)"
+            if addr == 0xff8e {
+                eprintln!("store ${:02x} to ff8e", value);
+            } else if addr == 0xff8f {
+                eprintln!("store ${:02x} to ff8f", value);
+            }
             self.state.management_bits[addr as usize - 0xfe00] = value;
         } else {
             // "interrupt enable register"
@@ -2025,6 +2045,7 @@ impl GBC {
             }
             Input::TraceIO => {
                 self.trace_io ^= true;
+                self.state.lcd.trace_io ^= true;
             }
             Input::Turbo => {
                 self.turbo ^= true;
@@ -2198,7 +2219,37 @@ impl GBC {
         */
 
         let pc_before = self.cpu.pc;
+        // if self.cpu.pc == 0xa0b {
+        if mem_map.load(pc_before) == 0xe0 && mem_map.load(pc_before + 1) == 0x8e {
+            self.cpu.print_branch_trace();
+//            self.verbose = true;
+        }
+        if pc_before == 0x940 {
+            eprintln!("at 940...");
+            eprintln!("clock: {}", self.clock);
+            eprintln!("{:?}", self.cpu);
+            eprintln!("----");
+        }
+        // stop tracing at reti
+        if mem_map.load(pc_before) == 0xd9 {
+            //self.verbose = false;
+        }
+
+        if mem_map.load(pc_before) == 0xf0 && mem_map.load(pc_before + 1) == 0x8e {
+            self.cpu.print_branch_trace();
+            self.verbose = false;
+        }
         let clocks = self.cpu.step(&mut mem_map);
+
+        if self.cpu.pc == 0xa0b {
+            eprintln!("vblank at clock: {}", self.clock);
+            eprint!("{:?}", &self.cpu);
+            let mut reader = BankReader::read_at(&mut mem_map, self.cpu.pc);
+            let decoder = yaxpeax_sm83::InstDecoder::default();
+
+            let instr = decoder.decode(&mut reader).unwrap();
+            eprintln!("pc={:#04x} {}", self.cpu.pc, instr.decorate(&self.cpu, &mem_map));
+        }
 
         /*
         if !self.in_boot && false {
@@ -2245,25 +2296,6 @@ impl GBC {
 //            eprintln!("emu breakpoint");
 //            self.verbose = true;
 //            self.cpu.verbose = true;
-        }
-        */
-
-        /*
-        if self.verbose {
-            eprintln!("clock: {}", self.clock);
-            eprint!("{:?}", &self.cpu);
-            let stack_entries = std::cmp::min(std::cmp::max(32, 0x10000 - self.cpu.sp as u32), 64);
-            let end = std::cmp::min(0x10000, self.cpu.sp as u32 + stack_entries);
-            let start = end - stack_entries - 0x10;
-            for i in 0..(stack_entries / 2) {
-                if i % 8 == 0 {
-                    eprint!("    {:04x}:", start + (i * 2));
-                }
-                eprint!(" {:02x}{:02x}", mem_map.load((start + i * 2 + 1) as u16), mem_map.load((start + i * 2) as u16));
-                if i % 8 == 7 {
-                    eprintln!("");
-                }
-            }
         }
         */
 

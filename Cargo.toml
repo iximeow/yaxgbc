@@ -34,3 +34,7 @@ yaxpeax-sm83 = { version = "0.2", git = "https://www.github.com/iximeow/yaxpeax-
 
 [profile.release]
 lto = true
+
+[features]
+
+branch-trace = []
