@@ -89,6 +89,18 @@ pub(crate) struct ExecutionEnvironment<'env, 'storage: 'env> {
     pub line_clock: u16,
 }
 
+impl<'env, 'storage: 'env> ExecutionEnvironment<'env, 'storage> {
+    fn load(&mut self, addr: u16) -> u8 {
+        self.clocks += 4;
+        self.storage.load(addr)
+    }
+
+    fn store(&mut self, addr: u16, value: u8) {
+        self.clocks += 4;
+        self.storage.store(addr, value);
+    }
+}
+
 impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yaxpeax_sm83::DecodeHandler<T> for ExecutionEnvironment<'_, '_> {
     fn on_word_read(&mut self, word: u8) {
         self.cpu.pc = self.cpu.pc.wrapping_add(1);
@@ -104,7 +116,9 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
             Reg8b::E => { self.cpu.de[0] = imm; }
             Reg8b::H => { self.cpu.hl[1] = imm; }
             Reg8b::L => { self.cpu.hl[0] = imm; }
-            Reg8b::DerefHL => { self.storage.store(u16::from_le_bytes(self.cpu.hl), imm) }
+            Reg8b::DerefHL => {
+                self.store(u16::from_le_bytes(self.cpu.hl), imm)
+            }
         };
         Ok(())
     }
@@ -139,9 +153,9 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
             Reg8b::L => { do_reg_inc(&mut self.cpu.hl[0], &mut self.cpu.af[0]); }
             Reg8b::DerefHL => {
                 let hl = u16::from_le_bytes(self.cpu.hl);
-                let mut v = self.storage.load(hl);
+                let mut v = self.load(hl);
                 do_reg_inc(&mut v, &mut self.cpu.af[0]);
-                self.storage.store(hl, v);
+                self.store(hl, v);
             }
         };
         Ok(())
@@ -177,9 +191,9 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
             Reg8b::L => { do_reg_dec(&mut self.cpu.hl[0], &mut self.cpu.af[0]); }
             Reg8b::DerefHL => {
                 let hl = u16::from_le_bytes(self.cpu.hl);
-                let mut v = self.storage.load(hl);
+                let mut v = self.load(hl);
                 do_reg_dec(&mut v, &mut self.cpu.af[0]);
-                self.storage.store(hl, v);
+                self.store(hl, v);
             }
         };
         Ok(())
@@ -231,7 +245,9 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
             Reg8b::E => { self.cpu.de[0] }
             Reg8b::H => { self.cpu.hl[1] }
             Reg8b::L => { self.cpu.hl[0] }
-            Reg8b::DerefHL => { self.storage.load(u16::from_le_bytes(self.cpu.hl)) }
+            Reg8b::DerefHL => {
+                self.load(u16::from_le_bytes(self.cpu.hl))
+            }
         };
         match dest {
             Reg8b::A => { self.cpu.af[1] = v; }
@@ -241,7 +257,9 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
             Reg8b::E => { self.cpu.de[0] = v; }
             Reg8b::H => { self.cpu.hl[1] = v; }
             Reg8b::L => { self.cpu.hl[0] = v; }
-            Reg8b::DerefHL => { self.storage.store(u16::from_le_bytes(self.cpu.hl), v) }
+            Reg8b::DerefHL => {
+                self.store(u16::from_le_bytes(self.cpu.hl), v)
+            }
         };
         Ok(())
     }
@@ -267,18 +285,18 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
     fn on_ld_8b_a_mem(&mut self, reg: DerefReg) -> Result<(), <SM83 as Arch>::DecodeError> {
         let v = match reg {
             DerefReg::DerefBC => {
-                self.storage.load(u16::from_le_bytes(self.cpu.bc))
+                self.load(u16::from_le_bytes(self.cpu.bc))
             },
             DerefReg::DerefDE => {
-                self.storage.load(u16::from_le_bytes(self.cpu.de))
+                self.load(u16::from_le_bytes(self.cpu.de))
             },
             DerefReg::DerefIncHL => {
-                let v = self.storage.load(u16::from_le_bytes(self.cpu.hl));
+                let v = self.load(u16::from_le_bytes(self.cpu.hl));
                 self.cpu.hl = u16::from_le_bytes(self.cpu.hl).wrapping_add(1).to_le_bytes();
                 v
             },
             DerefReg::DerefDecHL => {
-                let v = self.storage.load(u16::from_le_bytes(self.cpu.hl));
+                let v = self.load(u16::from_le_bytes(self.cpu.hl));
                 self.cpu.hl = u16::from_le_bytes(self.cpu.hl).wrapping_sub(1).to_le_bytes();
                 v
             },
@@ -288,8 +306,8 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
     }
     fn on_ld_a16_sp(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
         let bytes = self.cpu.sp.to_le_bytes();
-        self.storage.store(addr, bytes[0]);
-        self.storage.store(addr.wrapping_add(1), bytes[1]);
+        self.store(addr, bytes[0]);
+        self.store(addr.wrapping_add(1), bytes[1]);
         Ok(())
     }
     fn on_ld_rr_d16(&mut self, op: Reg16b, v: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
@@ -306,11 +324,11 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
         Ok(())
     }
     fn on_ld_a_8b_deref_addr(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
-        self.cpu.af[1] = self.storage.load(addr);
+        self.cpu.af[1] = self.load(addr);
         Ok(())
     }
     fn on_ld_8b_deref_addr_a(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
-        self.storage.store(addr, self.cpu.af[1]);
+        self.store(addr, self.cpu.af[1]);
         Ok(())
     }
     fn on_ld_hl_sp_offset(&mut self, ofs: i8) -> Result<(), <SM83 as Arch>::DecodeError> {
@@ -328,7 +346,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
         Ok(())
     }
     fn on_ldh_a_deref_high_8b(&mut self, ofs: u8) -> Result<(), <SM83 as Arch>::DecodeError> {
-        self.cpu.af[1] = self.storage.load(0xff00 + ofs as u16);
+        self.cpu.af[1] = self.load(0xff00 + ofs as u16);
 
         // GROSS AWFUL HACK (part 2): actually implement LY fixup. only done for `ldh` loads
         // because other loads are unlikely to be used for high ram. it's certainly possible
@@ -339,15 +357,15 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
         Ok(())
     }
     fn on_ldh_deref_high_8b_a(&mut self, ofs: u8) -> Result<(), <SM83 as Arch>::DecodeError> {
-        self.storage.store(0xff00 + ofs as u16, self.cpu.af[1]);
+        self.store(0xff00 + ofs as u16, self.cpu.af[1]);
         Ok(())
     }
     fn on_ldh_deref_high_c_a(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
-        self.storage.store(0xff00 + self.cpu.bc[0] as u16, self.cpu.af[1]);
+        self.store(0xff00 + self.cpu.bc[0] as u16, self.cpu.af[1]);
         Ok(())
     }
     fn on_ldh_a_deref_high_c(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
-        self.cpu.af[1] = self.storage.load(0xff00 + self.cpu.bc[0] as u16);
+        self.cpu.af[1] = self.load(0xff00 + self.cpu.bc[0] as u16);
 
         // GROSS AWFUL HACK (part 2): actually implement LY fixup. only done for `ldh` loads
         // because other loads are unlikely to be used for high ram. it's certainly possible
@@ -359,6 +377,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
     }
     #[inline(always)]
     fn on_add_16b_hl_rr(&mut self, op: Reg16b) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.clocks += 4;
         let hl = u16::from_le_bytes(self.cpu.hl);
         let other = match op {
             Reg16b::BC => { u16::from_le_bytes(self.cpu.bc) },
@@ -399,6 +418,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
     }
     #[inline(always)]
     fn on_inc_16b_rr(&mut self, op0: Reg16b) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.clocks += 4;
         match op0 {
             Reg16b::BC => { self.cpu.bc = u16::from_le_bytes(self.cpu.bc).wrapping_add(1).to_le_bytes(); },
             Reg16b::DE => { self.cpu.de = u16::from_le_bytes(self.cpu.de).wrapping_add(1).to_le_bytes(); },
@@ -408,6 +428,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
         Ok(())
     }
     fn on_dec_16b_rr(&mut self, op0: Reg16b) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.clocks += 4;
         match op0 {
             Reg16b::BC => { self.cpu.bc = u16::from_le_bytes(self.cpu.bc).wrapping_sub(1).to_le_bytes(); },
             Reg16b::DE => { self.cpu.de = u16::from_le_bytes(self.cpu.de).wrapping_sub(1).to_le_bytes(); },
@@ -418,6 +439,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
     }
     fn on_jr_unconditional(&mut self, rel: i8) -> Result<(), <SM83 as Arch>::DecodeError> {
         let target = self.cpu.pc.wrapping_add(rel as i16 as u16);
+        self.clocks += 4;
         self.cpu.trace_branch(&self.storage, self.cpu.pc, target);
         self.cpu.pc = target;
         Ok(())
@@ -448,34 +470,31 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
     }
     fn on_jp_unconditional(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
         self.cpu.trace_branch(&self.storage, self.cpu.pc, addr);
+        self.clocks += 4;
         self.cpu.pc = addr;
         Ok(())
     }
     fn on_jp_nz(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
         if (self.cpu.af[0] & 0b1000_0000) == 0 {
-            self.cpu.trace_branch(&self.storage, self.cpu.pc, addr);
-            self.cpu.pc = addr;
+            <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_jp_unconditional(self, addr)?;
         }
         Ok(())
     }
     fn on_jp_z(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
         if (self.cpu.af[0] & 0b1000_0000) != 0 {
-            self.cpu.trace_branch(&self.storage, self.cpu.pc, addr);
-            self.cpu.pc = addr;
+            <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_jp_unconditional(self, addr)?;
         }
         Ok(())
     }
     fn on_jp_nc(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
         if (self.cpu.af[0] & 0b0001_0000) == 0 {
-            self.cpu.trace_branch(&self.storage, self.cpu.pc, addr);
-            self.cpu.pc = addr;
+            <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_jp_unconditional(self, addr)?;
         }
         Ok(())
     }
     fn on_jp_c(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
         if (self.cpu.af[0] & 0b0001_0000) != 0 {
-            self.cpu.trace_branch(&self.storage, self.cpu.pc, addr);
-            self.cpu.pc = addr;
+            <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_jp_unconditional(self, addr)?;
         }
         Ok(())
     }
@@ -486,7 +505,9 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
         Ok(())
     }
     fn on_call_unconditional(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.clocks += 8; // for the two bytes pushed here
         self.cpu.push(self.storage, self.cpu.pc);
+        self.clocks += 4; // for the PC update here
         self.cpu.trace_call(&self.storage, self.cpu.pc, addr);
         self.cpu.pc = addr;
         Ok(())
@@ -525,7 +546,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
                     Reg8b::E => { self.cpu.de[0] },
                     Reg8b::H => { self.cpu.hl[1] },
                     Reg8b::L => { self.cpu.hl[0] },
-                    Reg8b::DerefHL => { self.storage.load(u16::from_le_bytes(self.cpu.hl)) },
+                    Reg8b::DerefHL => { self.load(u16::from_le_bytes(self.cpu.hl)) },
                     Reg8b::A => { self.cpu.af[1] },
                 };
                 let res = v & (1 << bit);
@@ -543,8 +564,8 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
                     Reg8b::L => { self.cpu.hl[0] &= !(1 << bit) },
                     Reg8b::DerefHL => {
                         let addr = u16::from_le_bytes(self.cpu.hl);
-                        let v = self.storage.load(addr);
-                        self.storage.store(addr, v & !(1 << bit));
+                        let v = self.load(addr);
+                        self.store(addr, v & !(1 << bit));
                     },
                     Reg8b::A => { self.cpu.af[1] &= !(1 << bit) },
                 };
@@ -559,8 +580,8 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
                     Reg8b::L => { self.cpu.hl[0] |= 1 << bit },
                     Reg8b::DerefHL => {
                         let addr = u16::from_le_bytes(self.cpu.hl);
-                        let v = self.storage.load(addr);
-                        self.storage.store(addr, v | (1 << bit));
+                        let v = self.load(addr);
+                        self.store(addr, v | (1 << bit));
                     },
                     Reg8b::A => { self.cpu.af[1] |= 1 << bit },
                 };
@@ -577,7 +598,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
             Reg8b::E => { self.cpu.de[0] },
             Reg8b::H => { self.cpu.hl[1] },
             Reg8b::L => { self.cpu.hl[0] },
-            Reg8b::DerefHL => { self.storage.load(u16::from_le_bytes(self.cpu.hl)) }
+            Reg8b::DerefHL => { self.load(u16::from_le_bytes(self.cpu.hl)) }
             Reg8b::A => { self.cpu.af[1] },
         };
         match op {
@@ -741,7 +762,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
             Reg8b::E => { self.cpu.de[0] },
             Reg8b::H => { self.cpu.hl[1] },
             Reg8b::L => { self.cpu.hl[0] },
-            Reg8b::DerefHL => { self.storage.load(u16::from_le_bytes(self.cpu.hl)) },
+            Reg8b::DerefHL => { self.load(u16::from_le_bytes(self.cpu.hl)) },
             Reg8b::A => { self.cpu.af[1] },
         };
         let res = match op {
@@ -828,45 +849,59 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
             Reg8b::E => { self.cpu.de[0] = res; }
             Reg8b::H => { self.cpu.hl[1] = res; }
             Reg8b::L => { self.cpu.hl[0] = res; }
-            Reg8b::DerefHL => { self.storage.store(u16::from_le_bytes(self.cpu.hl), res) }
+            Reg8b::DerefHL => { self.store(u16::from_le_bytes(self.cpu.hl), res) }
             Reg8b::A => { self.cpu.af[1] = res; }
         };
         Ok(())
     }
     fn on_push_af(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.clocks += 8;
         self.cpu.push(self.storage, u16::from_le_bytes(self.cpu.af));
+        self.clocks += 4;
         Ok(())
     }
     fn on_pop_af(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.clocks += 8;
         self.cpu.af = self.cpu.pop(self.storage).to_le_bytes();
         self.cpu.af[0] &= 0xf0;
         Ok(())
     }
     fn on_push_bc(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.clocks += 8;
         self.cpu.push(self.storage, u16::from_le_bytes(self.cpu.bc));
+        self.clocks += 4;
         Ok(())
     }
     fn on_pop_bc(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.clocks += 8;
         self.cpu.bc = self.cpu.pop(self.storage).to_le_bytes();
         Ok(())
     }
     fn on_push_de(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.clocks += 8;
         self.cpu.push(self.storage, u16::from_le_bytes(self.cpu.de));
+        self.clocks += 4;
         Ok(())
     }
     fn on_pop_de(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.clocks += 8;
         self.cpu.de = self.cpu.pop(self.storage).to_le_bytes();
         Ok(())
     }
     fn on_push_hl(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.clocks += 8;
         self.cpu.push(self.storage, u16::from_le_bytes(self.cpu.hl));
+        self.clocks += 4;
         Ok(())
     }
     fn on_pop_hl(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.clocks += 8;
         self.cpu.hl = self.cpu.pop(self.storage).to_le_bytes();
         Ok(())
     }
-    fn on_nop(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> { Ok(()) }
+    fn on_nop(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        Ok(())
+    }
     fn on_rlca(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
         let v = self.cpu.af[1];
         let mut c = 0;
@@ -964,6 +999,7 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
         Ok(())
     }
     fn on_ret_unconditional(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.clocks += 8;
         let target = self.cpu.pop(self.storage);
         self.cpu.trace_ret(&self.storage, self.cpu.pc, target);
         self.cpu.pc = target;
@@ -995,19 +1031,22 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
     }
     fn on_rst(&mut self, imm: u8) -> Result<(), <SM83 as Arch>::DecodeError> {
         if imm == 0x38 {
-            self.cpu.print_branch_trace();
-            panic!("probably bug. do you really mean to run 0xff?");
+            // prehistork man does seem to mean to do this
+            // self.cpu.print_branch_trace();
+            // panic!("probably bug. do you really mean to run 0xff?");
         }
+        self.clocks += 12;
         self.cpu.push(self.storage, self.cpu.pc);
         self.cpu.pc = imm as u16;
         Ok(())
     }
     fn on_reti(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
+        self.clocks += 8;
         let target = self.cpu.pop(self.storage);
         self.cpu.trace_reti(&self.storage, self.cpu.pc, target);
+        self.clocks += 8;
         self.cpu.pc = target;
         self.cpu.ime = true;
-        self.clocks += 16;
         Ok(())
     }
 }
@@ -1300,6 +1339,7 @@ impl Cpu {
                 self.pc = interrupt_addr;
                 // and finally, enter the ISR with interrupts disabled again.
                 self.ime = false;
+                return 20;
             }
         }
 
