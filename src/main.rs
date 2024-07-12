@@ -1053,7 +1053,6 @@ impl Lcd {
                     // visible..?
                     let window_y = if self.window_enable() && wx <= 166 {
                         if self.ly >= wy {
-                            self.ly - wy
                             Some(self.window_y)
                         } else {
                             None
@@ -1066,7 +1065,7 @@ impl Lcd {
                         ((window_y / 8) as u16, (window_y as u16 % 8))
                     });
                     for i in 0..160u8 {
-                        let (line_x, tile_data, attributes) = window_coords.and_then(|(window_y, window_y_offset)| {
+                        let (line_x, tile_yoffs, tile_data, attributes) = window_coords.and_then(|(window_y, window_y_offset)| {
                             if i + 7 < wx {
                                 // the window y-line was visible, but still too far left to draw
                                 // it.
@@ -1079,7 +1078,7 @@ impl Lcd {
                             let window_tile_x = (window_x / 8) as u16;
                             let window_tile_nr = window_y * 32 + window_tile_x;
                             let (tile_data, attributes) = self.window_tile_lookup_by_nr(vram, window_tile_nr);
-                            Some((window_x, tile_data, attributes))
+                            Some((window_x, window_y_offset, tile_data, attributes))
                         }).unwrap_or_else(|| {
                             // NOTE: if the screen is scrolled such that x would overflow past the end
                             // of the tile map, x waps back around to the left. i think.
@@ -1094,7 +1093,7 @@ impl Lcd {
                                     eprintln!("looking up tile number {} (at ({}, {})) -> {}", tile_nr, tile_x, tile_y, tile_id);
                                 }
                             }
-                            (line_x, tile_data, attributes)
+                            (line_x, tile_yoffs, tile_data, attributes)
                         });
 
                         let y_idx = if attributes.flip_vertical() {
