@@ -2918,29 +2918,29 @@ mod test {
     #[test]
     fn test_address_translation() {
         with_test_mapping(|mut memory| {
-            memory.ram[0x000_000] = 0x00;
+            memory.state.ram[0x000_000] = 0x00;
             assert_eq!(memory.load(0xc000), 0x00);
-            memory.ram[0x000_000] = 0xaa;
+            memory.state.ram[0x000_000] = 0xaa;
             assert_eq!(memory.load(0xc000), 0xaa);
 
-            memory.ram[0x000_001] = 0xff;
+            memory.state.ram[0x000_001] = 0xff;
             memory.store(0xc001, 0xab);
-            assert_eq!(memory.ram[0x000_001], 0xab);
+            assert_eq!(memory.state.ram[0x000_001], 0xab);
 
-            memory.ram[0x001_001] = 0xff;
+            memory.state.ram[0x001_001] = 0xff;
             memory.store(0xd001, 0xab);
-            assert_eq!(memory.ram[0x001_001], 0xab);
+            assert_eq!(memory.state.ram[0x001_001], 0xab);
 
-            memory.management_bits[SVBK] = 0x01;
+            memory.state.management_bits[SVBK] = 0x01;
             assert_eq!(memory.load(0xff70), 0x01);
             memory.store(0xff70, 0x03);
-            assert_eq!(memory.management_bits[SVBK], 0x03);
+            assert_eq!(memory.state.management_bits[SVBK], 0x03);
 
             assert_ne!(memory.load(0xd001), 0xab);
 
-            memory.ram[0x003_001] = 0xff;
+            memory.state.ram[0x003_001] = 0xff;
             memory.store(0xd001, 0xab);
-            assert_eq!(memory.ram[0x003_001], 0xab);
+            assert_eq!(memory.state.ram[0x003_001], 0xab);
         })
     }
 
