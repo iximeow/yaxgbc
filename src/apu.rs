@@ -19,6 +19,7 @@ pub struct Apu {
     sample_clock: u64,
     nr50: u8,
     nr51: u8,
+    #[allow(dead_code)]
     channel_active: [bool; 4],
     channel_1_dac_enable: bool,
     channel_1_clocks_since_sample: u64,
@@ -42,7 +43,6 @@ pub struct Apu {
     channel_2_clocks_since_sample: u64,
     channel_2_clocks_since_envelope_tick: u64,
     channel_2_length_timer: u8,
-    channel_2_pace: i8,
     channel_2_wave_duty: u8,
     channel_2_initial_length: u8,
     channel_2_initial_volume: u8,
@@ -76,7 +76,6 @@ pub struct Apu {
     channel_4_clock_shift: u8,
     channel_4_lfsr_width: u8,
     channel_4_clock_divider: u8,
-    channel_4_wavelength: u16,
     channel_4_trigger: bool,
 }
 
@@ -86,7 +85,7 @@ impl Apu {
             crate::NR10 => {
                 let period_sweep_pace = (value & 0x70) >> 4;
                 let period_sweep_direction = (value & 0x08) >> 3;
-                let period_step = (value & 0x07);
+                let period_step = value & 0x07;
                 self.channel_1_period_sweep_pace = period_sweep_pace;
                 self.channel_1_period_sweep_direction = period_sweep_direction != 0;
                 self.channel_1_period_step = period_step;
@@ -220,7 +219,7 @@ impl Apu {
                 self.channel_4_sweep_pace = sweep_pace;
             }
             crate::NR43 => {
-                self.channel_4_clock_shift = (value >> 4);
+                self.channel_4_clock_shift = value >> 4;
                 self.channel_4_lfsr_width = if (value >> 3) & 1 == 0 {
                     15
                 } else {
@@ -345,7 +344,6 @@ const WAVE_RAM_START: usize = 0x130;
             channel_2_clocks_since_sample: 0,
             channel_2_clocks_since_envelope_tick: 0,
             channel_2_length_timer: 0,
-            channel_2_pace: 0,
             channel_2_wave_duty: 0,
             channel_2_initial_length: 0,
             channel_2_initial_volume: 0,
@@ -377,7 +375,6 @@ const WAVE_RAM_START: usize = 0x130;
             channel_4_clock_shift: 0,
             channel_4_lfsr_width: 0,
             channel_4_clock_divider: 0,
-            channel_4_wavelength: 0,
             channel_4_trigger: false,
             channel_4_clocks_since_sample: 0,
         }
@@ -738,6 +735,8 @@ const WAVE_RAM_START: usize = 0x130;
         }
     }
 
+    // TODO: actually implement NR52..
+    #[allow(dead_code)]
     fn set_nr52(&mut self, v: u8) {
         // bit 7 controls the APU state, buts 0-3 are channel 1-4 state but are read-only
         // TODO: what happens on writes to bits 0-6? assuming those writes are discarded.

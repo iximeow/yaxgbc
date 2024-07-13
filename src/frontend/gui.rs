@@ -1,15 +1,12 @@
 use std::collections::HashMap;
-use std::fmt::Write;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::{STAT, SCX, SCY, IF, IE, GBC, LCDC, LY, LYC, WX, WY};
+use crate::{STAT, SCX, SCY, IF, IE, GBC, LYC, WX, WY};
 
 use std::time::SystemTime;
 
 use egui_miniquad;
 use egui;
-use egui::Vec2;
 use miniquad::{Buffer, BufferLayout, BufferType, Bindings, Texture, Pipeline, Shader, VertexAttribute, VertexFormat};
 
 struct GBCPainter {
@@ -70,7 +67,7 @@ impl miniquad::EventHandler for GBCPainter {
         ctx.end_render_pass();
 //        ctx.commit_frame();
 
-        let dpi_scale = ctx.dpi_scale();
+//        let dpi_scale = ctx.dpi_scale();
 
         let mut gb = self.gb_state.lock().unwrap();
 
@@ -169,8 +166,8 @@ impl miniquad::EventHandler for GBCPainter {
         });
         let mut pixels: Vec<u8> = Vec::new();
         let mut addr = 0;
-        for y in 0..SCREEN_HEIGHT {
-            for x in 0..SCREEN_WIDTH {
+        for _ in 0..SCREEN_HEIGHT {
+            for _ in 0..SCREEN_WIDTH {
                 let next_px = &gb.state.lcd.display[addr * 4..][..4];
                 pixels.extend_from_slice(next_px);
                 addr += 1;
@@ -182,9 +179,9 @@ impl miniquad::EventHandler for GBCPainter {
                 let mut addr = 0;
                 let mut pixels: Vec<u8> = Vec::new();
                 // OAM debug panel height
-                for y in 0..OAM_DEBUG_PANEL_HEIGHT {
+                for _ in 0..OAM_DEBUG_PANEL_HEIGHT {
                     // OAM debug panel width
-                    for x in 0..OAM_DEBUG_PANEL_WIDTH {
+                    for _ in 0..OAM_DEBUG_PANEL_WIDTH {
                         let next_px = &gb.sprite_debug_panel[addr * 4..][..4];
                         pixels.extend_from_slice(next_px);
                         addr += 1;
@@ -212,8 +209,8 @@ impl miniquad::EventHandler for GBCPainter {
             None
         };
 
-        let mut vertex_buffers = vec![self.vertex_buffer];
-        let mut images = vec![texture];
+        let vertex_buffers = vec![self.vertex_buffer];
+        let images = vec![texture];
 
         let bindings = Bindings {
             vertex_buffers,
@@ -311,17 +308,7 @@ const OAM_DEBUG_PANEL_WIDTH: u16 = 122;
 const OAM_DEBUG_PANEL_HEIGHT: u16 = 182;
 
 pub(crate) fn do_ui(gb_state: Arc<Mutex<GBC>>) {
-    let conf = miniquad::conf::Conf {
-//        high_dpi: true,
-        window_height: SCREEN_HEIGHT as i32 * 6,
-        window_width: SCREEN_WIDTH as i32 * 6,
-        platform: miniquad::conf::Platform {
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-
-    miniquad::start(miniquad::conf::Conf::default(), |mut ctx| {
+    miniquad::start(miniquad::conf::Conf::default(), |ctx| {
         #[repr(C)]
         struct Vec2 {
             x: f32,

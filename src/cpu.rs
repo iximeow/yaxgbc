@@ -102,7 +102,7 @@ impl<'env, 'storage: 'env> ExecutionEnvironment<'env, 'storage> {
 }
 
 impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yaxpeax_sm83::DecodeHandler<T> for ExecutionEnvironment<'_, '_> {
-    fn on_word_read(&mut self, word: u8) {
+    fn on_word_read(&mut self, _word: u8) {
         self.cpu.pc = self.cpu.pc.wrapping_add(1);
         self.clocks += 4;
     }
@@ -445,25 +445,25 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
         Ok(())
     }
     fn on_jr_nz(&mut self, rel: i8) -> Result<(), <SM83 as Arch>::DecodeError> {
-        if (self.cpu.af[0] & 0b1000_0000) == 0 {
+        if !self.cpu.flag_z() {
             <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_jr_unconditional(self, rel)?;
         }
         Ok(())
     }
     fn on_jr_z(&mut self, rel: i8) -> Result<(), <SM83 as Arch>::DecodeError> {
-        if (self.cpu.af[0] & 0b1000_0000) != 0 {
+        if self.cpu.flag_z() {
             <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_jr_unconditional(self, rel)?;
         }
         Ok(())
     }
     fn on_jr_nc(&mut self, rel: i8) -> Result<(), <SM83 as Arch>::DecodeError> {
-        if (self.cpu.af[0] & 0b0001_0000) == 0 {
+        if !self.cpu.flag_c() {
             <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_jr_unconditional(self, rel)?;
         }
         Ok(())
     }
     fn on_jr_c(&mut self, rel: i8) -> Result<(), <SM83 as Arch>::DecodeError> {
-        if (self.cpu.af[0] & 0b0001_0000) != 0 {
+        if self.cpu.flag_c() {
             <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_jr_unconditional(self, rel)?;
         }
         Ok(())
@@ -513,25 +513,25 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
         Ok(())
     }
     fn on_call_nz(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
-        if (self.cpu.af[0] & 0b1000_0000) == 0 {
+        if !self.cpu.flag_z() {
             <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_call_unconditional(self, addr)?;
         }
         Ok(())
     }
     fn on_call_z(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
-        if (self.cpu.af[0] & 0b1000_0000) != 0 {
+        if self.cpu.flag_z() {
             <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_call_unconditional(self, addr)?;
         }
         Ok(())
     }
     fn on_call_nc(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
-        if (self.cpu.af[0] & 0b0001_0000) == 0 {
+        if !self.cpu.flag_c() {
             <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_call_unconditional(self, addr)?;
         }
         Ok(())
     }
     fn on_call_c(&mut self, addr: u16) -> Result<(), <SM83 as Arch>::DecodeError> {
-        if (self.cpu.af[0] & 0b0001_0000) != 0 {
+        if self.cpu.flag_c() {
             <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_call_unconditional(self, addr)?;
         }
         Ok(())
@@ -1006,25 +1006,25 @@ impl<T: yaxpeax_arch::Reader<<SM83 as Arch>::Address, <SM83 as Arch>::Word>> yax
         Ok(())
     }
     fn on_ret_nz(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
-        if (self.cpu.af[0] & 0b1000_0000) == 0 {
+        if !self.cpu.flag_z() {
             <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_ret_unconditional(self)?;
         }
         Ok(())
     }
     fn on_ret_z(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
-        if (self.cpu.af[0] & 0b1000_0000) != 0 {
+        if self.cpu.flag_z() {
             <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_ret_unconditional(self)?;
         }
         Ok(())
     }
     fn on_ret_nc(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
-        if (self.cpu.af[0] & 0b0001_0000) == 0 {
+        if !self.cpu.flag_c() {
             <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_ret_unconditional(self)?;
         }
         Ok(())
     }
     fn on_ret_c(&mut self) -> Result<(), <SM83 as Arch>::DecodeError> {
-        if (self.cpu.af[0] & 0b0001_0000) != 0 {
+        if self.cpu.flag_c() {
             <Self as yaxpeax_sm83::DecodeHandler::<T>>::on_ret_unconditional(self)?;
         }
         Ok(())
@@ -1086,47 +1086,62 @@ impl Cpu {
         }
     }
 
+    #[cfg(feature="branch-trace")]
     pub fn print_branch_trace(&self) {
         for record in self.branch_trace.iter() {
             eprintln!("  {:?}", record);
         }
     }
 
+    #[allow(unused_variables)]
+    #[allow(unreachable_code)]
     fn trace_int<'storage: 'env, 'env>(&mut self, storage: &'env MemoryMapping<'storage>, from: u16, to: u16, int_bit: u8) {
-        #[cfg(not(feature="branch-trace"))]
-        return;
+        if cfg!(not(feature="branch-trace")) {
+            return;
+        } else {
+            let from_linear = storage.recursive_translate(from);
+            let to_linear = storage.recursive_translate(to);
 
-        let from_linear = storage.recursive_translate(from);
-        let to_linear = storage.recursive_translate(to);
-
-        let addrs = BranchAddrs {
-            from,
-            to,
-            from_linear,
-            to_linear,
-        };
+            let addrs = BranchAddrs {
+                from,
+                to,
+                from_linear,
+                to_linear,
+            };
 
 
-        self.branch_trace.push_front(BranchTrace::Int { addrs });
-        self.call_stack.push(CallRecord::int(addrs, int_bit));
+            self.branch_trace.push_front(BranchTrace::Int { addrs });
+            self.call_stack.push(CallRecord::int(addrs, int_bit));
+        }
     }
 
+    #[allow(unused_variables)]
     fn trace_reti<'storage: 'env, 'env>(&mut self, storage: &'env MemoryMapping<'storage>, from: u16, to: u16) {
-        #[cfg(not(feature="branch-trace"))]
-        return;
+        if cfg!(not(feature="branch-trace")) {
+            return;
+        } else {
+            while self.branch_trace.len() > TRACE_DEPTH {
+                self.branch_trace.pop_back();
+            }
+            let from_linear = storage.recursive_translate(from);
+            let to_linear = storage.recursive_translate(to);
 
-        while self.branch_trace.len() > TRACE_DEPTH {
-            self.branch_trace.pop_back();
-        }
-        let from_linear = storage.recursive_translate(from);
-        let to_linear = storage.recursive_translate(to);
-
-        let prev_rec = self.call_stack.pop();
-        match prev_rec {
-            Some(CallRecord { addrs, call_kind: CallKind::Int { iflags }}) => {
-                if addrs.from_linear != to_linear {
-                    eprintln!("matched interrupt (if: {:#08x}) at {}:{:#x} but returning to {}:{:#x}",
-                        iflags,
+            let prev_rec = self.call_stack.pop();
+            match prev_rec {
+                Some(CallRecord { addrs, call_kind: CallKind::Int { iflags }}) => {
+                    if addrs.from_linear != to_linear {
+                        eprintln!("matched interrupt (if: {:#08x}) at {}:{:#x} but returning to {}:{:#x}",
+                            iflags,
+                            addrs.from_linear.segment_name(),
+                            addrs.from_linear.address,
+                            to_linear.segment_name(),
+                            to_linear.address,
+                        );
+                        eprintln!("call stack as traced is ... {:?}", self.call_stack.as_slice());
+                    }
+                },
+                Some(CallRecord { addrs, call_kind }) => {
+                    eprintln!("reti (returning to {}:{:#x}) paired with non-interrupt at {}:{:#x}",
                         addrs.from_linear.segment_name(),
                         addrs.from_linear.address,
                         to_linear.segment_name(),
@@ -1134,118 +1149,115 @@ impl Cpu {
                     );
                     eprintln!("call stack as traced is ... {:?}", self.call_stack.as_slice());
                 }
-            },
-            Some(CallRecord { addrs, call_kind }) => {
-                eprintln!("reti (returning to {}:{:#x}) paired with non-interrupt at {}:{:#x}",
-                    addrs.from_linear.segment_name(),
-                    addrs.from_linear.address,
-                    to_linear.segment_name(),
-                    to_linear.address,
-                );
-                eprintln!("call stack as traced is ... {:?}", self.call_stack.as_slice());
+                None => {
+                    eprintln!("reti, but not matched with an interrupt");
+                }
             }
-            None => {
-                eprintln!("reti, but not matched with an interrupt");
-            }
-        }
 
-        self.branch_trace.push_front(BranchTrace::Reti {
-            addrs: BranchAddrs {
-                from,
-                to,
-                from_linear,
-                to_linear,
-            }
-        });
+            self.branch_trace.push_front(BranchTrace::Reti {
+                addrs: BranchAddrs {
+                    from,
+                    to,
+                    from_linear,
+                    to_linear,
+                }
+            });
+        }
     }
 
+    #[allow(unused_variables)]
     fn trace_ret<'storage: 'env, 'env>(&mut self, storage: &'env MemoryMapping<'storage>, from: u16, to: u16) {
-        #[cfg(not(feature="branch-trace"))]
-        return;
-
-        while self.branch_trace.len() > TRACE_DEPTH {
-            self.branch_trace.pop_back();
-        }
-        let from_linear = storage.recursive_translate(from);
-        let to_linear = storage.recursive_translate(to);
-
-        let prev_rec = self.call_stack.pop();
-        match prev_rec {
-            Some(rec) => {
-                if rec.addrs.from_linear != to_linear {
-                    eprintln!("matched call at {}:{:#?} but returning to {}:{:#?}",
-                        rec.addrs.from_linear.segment_name(),
-                        rec.addrs.from_linear.address,
-                        to_linear.segment_name(),
-                        to_linear.address,
-                    );
-                }
-            },
-            None => {
-                eprintln!("reti, but not matched with an interrupt");
+        if cfg!(not(feature="branch-trace")) {
+            return;
+        } else {
+            while self.branch_trace.len() > TRACE_DEPTH {
+                self.branch_trace.pop_back();
             }
-        }
+            let from_linear = storage.recursive_translate(from);
+            let to_linear = storage.recursive_translate(to);
 
-        self.branch_trace.push_front(BranchTrace::Ret {
-            addrs: BranchAddrs {
+            let prev_rec = self.call_stack.pop();
+            match prev_rec {
+                Some(rec) => {
+                    if rec.addrs.from_linear != to_linear {
+                        eprintln!("matched call at {}:{:#?} but returning to {}:{:#?}",
+                            rec.addrs.from_linear.segment_name(),
+                            rec.addrs.from_linear.address,
+                            to_linear.segment_name(),
+                            to_linear.address,
+                        );
+                    }
+                },
+                None => {
+                    eprintln!("reti, but not matched with an interrupt");
+                }
+            }
+
+            self.branch_trace.push_front(BranchTrace::Ret {
+                addrs: BranchAddrs {
+                    from,
+                    to,
+                    from_linear,
+                    to_linear,
+                }
+            });
+        }
+    }
+
+    #[allow(unused_variables)]
+    fn trace_call<'storage: 'env, 'env>(&mut self, storage: &'env MemoryMapping<'storage>, from: u16, to: u16) {
+        if cfg!(not(feature="branch-trace")) {
+            return;
+        } else {
+            let from_linear = storage.recursive_translate(from);
+            let to_linear = storage.recursive_translate(to);
+
+            let addrs = BranchAddrs {
                 from,
                 to,
                 from_linear,
                 to_linear,
+            };
+
+            while self.branch_trace.len() > TRACE_DEPTH {
+                self.branch_trace.pop_back();
             }
-        });
-    }
 
-    fn trace_call<'storage: 'env, 'env>(&mut self, storage: &'env MemoryMapping<'storage>, from: u16, to: u16) {
-        #[cfg(not(feature="branch-trace"))]
-        return;
-
-        let from_linear = storage.recursive_translate(from);
-        let to_linear = storage.recursive_translate(to);
-
-        let addrs = BranchAddrs {
-            from,
-            to,
-            from_linear,
-            to_linear,
-        };
-
-        while self.branch_trace.len() > TRACE_DEPTH {
-            self.branch_trace.pop_back();
+            self.branch_trace.push_front(BranchTrace::Call { addrs });
+            self.call_stack.push(CallRecord::call(addrs));
         }
-
-        self.branch_trace.push_front(BranchTrace::Call { addrs });
-        self.call_stack.push(CallRecord::call(addrs));
     }
 
+    #[allow(unused_variables)]
     fn trace_branch<'storage: 'env, 'env>(&mut self, storage: &'env MemoryMapping<'storage>, from: u16, to: u16) {
-        #[cfg(not(feature="branch-trace"))]
-        return;
+        if cfg!(not(feature="branch-trace")) {
+            return;
+        } else {
+            let from_linear = storage.recursive_translate(from);
+            let to_linear = storage.recursive_translate(to);
 
-        let from_linear = storage.recursive_translate(from);
-        let to_linear = storage.recursive_translate(to);
+            let traced_addrs = BranchAddrs {
+                from,
+                to,
+                from_linear,
+                to_linear,
+            };
 
-        let traced_addrs = BranchAddrs {
-            from,
-            to,
-            from_linear,
-            to_linear,
-        };
-
-        if let Some(front) = self.branch_trace.front_mut() {
-            if let BranchTrace::Branch { addrs, count } = front {
-                if *addrs == traced_addrs {
-                    *count += 1;
-                    return;
+            if let Some(front) = self.branch_trace.front_mut() {
+                if let BranchTrace::Branch { addrs, count } = front {
+                    if *addrs == traced_addrs {
+                        *count += 1;
+                        return;
+                    }
                 }
             }
-        }
 
-        if self.branch_trace.len() > 10 {
-            self.branch_trace.pop_back();
-        }
+            if self.branch_trace.len() > 10 {
+                self.branch_trace.pop_back();
+            }
 
-        self.branch_trace.push_front(BranchTrace::Branch { addrs: traced_addrs, count: 1 });
+            self.branch_trace.push_front(BranchTrace::Branch { addrs: traced_addrs, count: 1 });
+        }
     }
 
     fn flags_clear(&mut self) {
@@ -1356,7 +1368,7 @@ impl Cpu {
             return 4;
         }
 
-        let mut buf = [
+        let buf = [
             memory.load(self.pc),
             memory.load(self.pc + 1),
             memory.load(self.pc + 2),
@@ -1383,6 +1395,7 @@ impl Cpu {
 
 // TODO: CB3F does not work?
 
+#[allow(dead_code)]
 mod test {
     use crate::{Cpu, FlatMapper, MemoryMapping};
 
@@ -1393,8 +1406,8 @@ mod test {
         }
 
         let mut rom = FlatMapper::new(rom.into_boxed_slice());
-        let mut lcd = crate::Lcd::new();
-        let mut apu = crate::Apu::new();
+        let lcd = crate::Lcd::new();
+        let apu = crate::Apu::new();
         let mut memory = MemoryMapping {
             cart: &mut rom,
             state: &mut crate::GBCState {
@@ -1410,6 +1423,7 @@ mod test {
         cpu.step(&mut memory);
     }
 
+    #[allow(unused_imports)]
     mod ld {
         use crate::Cpu;
         use crate::FlatMapper;
@@ -1673,6 +1687,7 @@ mod test {
 
 pub(crate) struct DecoratedInstruction<'instr, 'data> {
     cpu: &'instr Cpu,
+    #[allow(unused)] // plan to use this in the future for better instruction decoration..
     memory: &'instr MemoryMapping<'data>,
     inst: &'instr yaxpeax_sm83::Instruction,
 }
@@ -1734,7 +1749,7 @@ fn addr_name_lookup(addr: u16) -> Option<&'static str> {
         0xff00 => Some("JOYP"),
         0xff04 => Some("DIV"),
         0xff0f => Some("IF"),
-        0xff0f => Some("IE"),
+        0xffff => Some("IE"),
         0xff30 => Some("WAVE"),
         0xff40 => Some("LCDC"),
         0xff41 => Some("STAT"),

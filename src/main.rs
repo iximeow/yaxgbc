@@ -3,23 +3,20 @@ use clap::Parser;
 use std::fmt;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::fmt::{Write as FmtWrite};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 use std::time::SystemTime;
 use std::mem::size_of;
 
-use yaxpeax_arch::{Decoder, ReadError};
+use yaxpeax_arch::ReadError;
 
 mod apu;
 use crate::apu::Apu;
 mod cpu;
 use crate::cpu::Cpu;
-use crate::cpu::DecorateExt;
 
 mod frontend;
-mod timer;
 
 #[derive(Parser)]
 #[clap(about, version, author)]
@@ -90,9 +87,6 @@ fn main() {
         }
     }
 
-    let mut i = 0;
-    let mut clock_total = 0;
-    const CLOCKS_PER_FRAME: u64 = 4_190_000 / 60;
     let mut frame_target = SystemTime::now() + Duration::from_millis(16);
     let mut last_overshoot = 0;
 
@@ -232,6 +226,7 @@ fn main() {
 struct Lcd {
     // HBlank, VBlank, Searching OAM, Transferring Data to LCD Controller
     mode: u8,
+    #[cfg(feature="trace-io")]
     trace_io: bool,
     oam_enable_real: bool,
     background_enable_real: bool,
@@ -246,9 +241,6 @@ struct Lcd {
     current_draw_start: u64,
     current_oam_penalty: u64,
     initial_scx: u8,
-    // when, in dots, we'll be at the next line. this is the end of the current line's HBlank.
-    next_line: u64,
-    next_draw_time: u64,
     oam_scan_items: Vec<OamItem>,
     oam: [u8; 0xa0],
     background_palettes_data: [u8; 0x40],
@@ -359,12 +351,14 @@ static CHANNEL_CORRECTION: [u8; 32] = [
 impl Lcd {
     const OAM_SCAN: u64 = 80;
     const LINE_TIME: u64 = 376 + Self::OAM_SCAN;
+    #[allow(dead_code)]
     const VBLANK_TIME: u64 = 4560; // vblank is 10 scan lines
     const SCREEN_TIME: u64 = 154 * Self::LINE_TIME;
 
     fn new() -> Self {
         Self {
             mode: 1,
+            #[cfg(feature="trace-io")]
             trace_io: false,
             oam_enable_real: true,
             background_enable_real: true,
@@ -379,8 +373,6 @@ impl Lcd {
             current_draw_start: 0,
             current_oam_penalty: 0,
             initial_scx: 0,
-            next_line: Self::LINE_TIME,
-            next_draw_time: Self::SCREEN_TIME,
             oam_scan_items: Vec::new(),
             oam: [0u8; 0xa0],
             background_palettes_data: [0u8; 0x40],
@@ -543,7 +535,7 @@ impl Lcd {
     }
 
     fn background_tile_base(&self) -> u16 {
-        if (self.lcdc & 0b0000_1000 == 0) {
+        if self.lcdc & 0b0000_1000 == 0 {
             0x1800
         } else {
             0x1c00
@@ -678,9 +670,6 @@ impl Lcd {
         let sprite_height = 8;
 
         for i in 0..128usize { // look at the first 160 tiles out of all 256 in the lcdc-addressible region
-            let obj_x = 42 + 2 + (i % 8 + 4) * (12 + 2);
-            let obj_y = 1 + (i / 8) * (12 + 1);
-
             let obj_x = i % 8;
             let obj_x_px = 42 + 2 + obj_x * (8 + 2);
             let obj_y = i / 8;
@@ -695,7 +684,6 @@ impl Lcd {
             } else {
                 TileAttributes(0)
             };
-            let tile_addr = tile_index as usize * 16;
 
             let bank = attrs.vram_bank() as usize * 0x2000;
 
@@ -706,8 +694,8 @@ impl Lcd {
                     selected_line
                 };
                 let (tile_row_lo, tile_row_hi) = {
-                    let mut tile_addr = bank + tile_index as usize * 16;
-                    let mut tile_line = y_addr;
+                    let tile_addr = bank + tile_index as usize * 16;
+                    let tile_line = y_addr;
 
                     let tile_data = &vram[tile_addr..][..16];
                     let lo = tile_data[tile_line as usize * 2];
@@ -755,7 +743,7 @@ impl Lcd {
         if clocks > 40 {
             panic!("update Lcd::advance_clock to handle huge jumps");
         }
-        let mut screen_time = self.lcd_clock - self.current_draw_start;
+        let screen_time = self.lcd_clock - self.current_draw_start;
 
         let mut should_interrupt = false;
 
@@ -777,7 +765,6 @@ impl Lcd {
             }
 
             self.current_line_start = self.current_draw_start;
-            screen_time -= screen_time % Self::SCREEN_TIME;
         }
 
         let mut line_time = self.lcd_clock - self.current_line_start;
@@ -815,7 +802,7 @@ impl Lcd {
                         let from_oam = if self.lcdc & 1 == 0 {
                             true
                         } else {
-                            if (self.oam_pixels[px].bg_priority || self.background_pixels[px].bg_priority) {
+                            if self.oam_pixels[px].bg_priority || self.background_pixels[px].bg_priority {
                                 self.background_pixels[px].pixel == 0
                             } else {
                                 true
@@ -907,10 +894,6 @@ impl Lcd {
                             self.current_oam_penalty += 6;
                         }
 
-                        if self.ly == 88 {
-//                            eprintln!("item {} x_end,y_end[height={}]=({}, {}), selected line {} of tile {}", i, sprite_height, x_end, y_end, selected_line, self.oam[object_addr + 2]);
-                        }
-
                         // low bit of tile index is masked to 0 in 8x16 mode
                         let tile_index = if self.lcdc & 0b100 == 0 {
                             self.oam[object_addr + 2]
@@ -928,23 +911,6 @@ impl Lcd {
                             break;
                         }
                     }
-                    /*
-                if self.ly == 88 {
-                    for px in 0..160 {
-                        eprint!("{:03}={:02},{}", px, self.oam_pixels[px].pixel, self.oam_pixels[px].rgb);
-                        if px % 16 == 0 {
-                            eprintln!("");
-                        }
-                    }
-                    eprintln!("");
-                }
-                */
-                    /*
-                    self.oam_scan_items.sort_by_key(|item| item.x);
-                    while self.oam_scan_items.len() > 10 {
-                        self.oam_scan_items.pop();
-                    }
-                    */
                 }
             } else if line_time < 80 + 172 + self.current_oam_penalty {
                 // the exact timing here depends on how many OBJs were found. 172 is a minimum.
@@ -989,9 +955,6 @@ impl Lcd {
     }
 
     fn advance_background(&mut self, vram: &[u8], start: u8, end: u8, scy: u8, scx: u8, wy: u8, wx: u8) {
-        let tile_base = self.background_tile_base();
-        let window_tile_base = self.window_tile_base();
-
         let background_y = scy.wrapping_add(self.ly);
         let background_x = scx + 0;
         let tile_y = (background_y / 8) as u16;
@@ -999,8 +962,6 @@ impl Lcd {
 
         // if `ly < wy` this will be `None`, and our sign that we're not drawing the
         // window on this line.
-        // TODO: handle window ly separately given the window might not always be
-        // visible..?
         let window_y = if self.window_enable() && wx <= 166 {
             if self.ly >= wy {
                 Some(self.window_y)
@@ -1054,7 +1015,7 @@ impl Lcd {
             };
             let tile_row_lo = tile_data[y_idx as usize * 2];
             let tile_row_hi = tile_data[y_idx as usize * 2 + 1];
-            let tile_xoffs = (line_x % 8);
+            let tile_xoffs = line_x % 8;
             let x_idx = if attributes.flip_horizontal() {
                 7 - tile_xoffs
             } else {
@@ -1142,20 +1103,6 @@ impl Lcd {
                     } else {
                         Self::px2rgba(&self.object_palette_data_cache, item.oam_attrs.bg_palette(), px)
                     };
-                    /*
-                    const COLORS: &[u32] = &[
-                        0x0000ff, 0x000080, 0x000040,
-                        0x00ff00, 0x008000, 0x004000,
-                        0xff0000, 0x800000, 0x400000,
-                        0x00ffff, 0x00ff80, 0x00ff40,
-                        0x0080ff, 0x008080, 0x008040,
-                        0x0040ff, 0x004080, 0x004040,
-                        0xff00ff, 0xff0080, 0xff0040,
-                        0x8000ff, 0x800080, 0x800040,
-                        0x4000ff, 0x400080, 0x400040,
-                    ];
-                    let px = COLORS[(px as usize) % COLORS.len()].wrapping_mul(item.x as u32 + y_addr as u32);
-                    */
 
                     let can_overwrite = if !self.dmg_compat {
                         // is oam_pri unset? then we are the first oam item to be drawn
@@ -1196,6 +1143,7 @@ struct BankReader<'memory> {
     storage: &'memory dyn MemoryBanks,
 }
 
+#[allow(dead_code)]
 impl<'a> BankReader<'a> {
     fn read_at(data: &'a dyn MemoryBanks, addr: u16) -> Self {
         BankReader {
@@ -1382,9 +1330,7 @@ impl MemoryBanks for MemoryMapping<'_> {
                     let v = if (reg >= APU_MIN_REG && reg <= APU_MAX_REG) || reg == PCM12 || reg == PCM34 {
                         self.state.apu.load(reg)
                     } else if reg == JOYP {
-                        let mut res = self.state.management_bits[reg];
-//                        eprintln!("reading joyp: {:08b}", res);
-                        res
+                        self.state.management_bits[reg]
                     } else if reg == VBK {
                         // "Reading from this register will return the number of the currently loaded VRAM
                         // bank in bit 0, and all other bits will be set to 1."
@@ -1530,7 +1476,7 @@ impl MemoryBanks for MemoryMapping<'_> {
                 self.state.apu.store(reg, value);
             } else if reg == JOYP {
                 self.state.management_bits[reg] &= 0b1100_1111;
-                self.state.management_bits[reg] |= (value & 0b0011_0000);
+                self.state.management_bits[reg] |= value & 0b0011_0000;
             } else if reg == KEY1 {
                 self.state.management_bits[reg] |= value & 0b1;
             } else if reg == LY {
@@ -1661,8 +1607,11 @@ impl MemoryBanks for MemoryMapping<'_> {
                 // super mario world 6 golden coins writes to ff7f and ff7e. bug in the game?
                 // anyway, writes are discarded.
             } else {
-                        panic!("unhandled write {:04x}", reg);
-                self.state.management_bits[reg] = value;
+                panic!("unhandled write {:04x}", reg);
+                #[allow(unreachable_code)]
+                {
+                    self.state.management_bits[reg] = value;
+                }
             }
         } else if addr < 0xffff {
             // "high ram (HRAM)"
@@ -1672,12 +1621,6 @@ impl MemoryBanks for MemoryMapping<'_> {
             self.state.management_bits[addr as usize - 0xfe00] = value;
         }
     }
-}
-
-enum GBState {
-    PreStart,
-    RomExit,
-    EmulationError,
 }
 
 // Joypad input
@@ -1762,7 +1705,9 @@ const NR42: usize = 0x121;
 const NR43: usize = 0x122;
 const NR44: usize = 0x123;
 // Sound channel 3 wave ram
+#[allow(dead_code)]
 const WAVE_RAM_START: usize = 0x130;
+#[allow(dead_code)]
 const WAVE_RAM_END: usize = 0x13f;
 // Master volume & VIN panning
 // Bit 7   - Mix VIN into left output  (1=Enable)
@@ -1891,6 +1836,7 @@ const PCM34: usize = 0x177;
 // Interrupt Enable
 const IE: usize = 0x1ff;
 
+#[allow(dead_code)]
 fn dump_mem_region(mem_map: &dyn MemoryBanks, start: u16, words: u16, width: u16) {
     for i in 0..(words / 2) {
         if i % width == 0 {
@@ -2219,7 +2165,7 @@ impl GBC {
             trace_io: self.trace_io,
         };
 
-        let pc_before = self.cpu.pc;
+        // let pc_before = self.cpu.pc;
         let clocks = self.cpu.step(&mut mem_map);
 
         if self.in_boot {
@@ -2231,9 +2177,6 @@ impl GBC {
                 if self.state.management_bits[VBK] != 0 {
                     panic!("vbk in nonsense mode at rom switch: {}", self.state.management_bits[VBK]);
                 }
-//                eprintln!("boot rom complete, switching to cart");
-//                self.verbose = true;
-//                self.cpu.verbose = true;
                 self.in_boot = false;
                 std::mem::swap(&mut self.active_rom, &mut self.boot_rom);
                 std::mem::swap(&mut self.cart, &mut self.active_rom);
@@ -2352,6 +2295,8 @@ impl MemoryBankControllerType {
     }
 }
 
+// allow dead code for the yet-unimplemented features: in-cartridge battery, RTC, rumble..
+#[allow(dead_code)]
 #[derive(Debug, Copy, Clone)]
 struct CartridgeFeatures {
     mbc: MemoryBankControllerType,
@@ -2424,6 +2369,7 @@ fn parse_features(features: u8) -> Option<CartridgeFeatures> {
 
 struct GBCCart {
     cgb: bool,
+    #[allow(dead_code)]
     features: CartridgeFeatures,
     mapper: Box<dyn MemoryBanks + Send>,
 }
@@ -2933,6 +2879,7 @@ impl GBCCart {
     }
 }
 
+#[allow(dead_code)]
 mod test {
     use super::*;
 
@@ -2958,7 +2905,7 @@ mod test {
             management_bits: [0u8; 0x200],
         };
 
-        let mut memory = MemoryMapping {
+        let memory = MemoryMapping {
             cart: &mut rom,
             state: &mut state,
             verbose: false,
@@ -3016,6 +2963,7 @@ mod test {
     }
 }
 
+#[cfg(feature="trace-io")]
 fn reg_name(reg: usize) -> Option<&'static str> {
     match reg {
         0x100 => Some("JOYP"),
@@ -3026,8 +2974,8 @@ fn reg_name(reg: usize) -> Option<&'static str> {
         0x106 => Some("TMA"),
         0x107 => Some("TAC"),
         0x10f => Some("IF"),
-        0x110 => Some("APU_MIN_REG"),
-        0x13f => Some("APU_MAX_REG"),
+//        0x110 => Some("APU_MIN_REG"),
+//        0x13f => Some("APU_MAX_REG"),
         0x110 => Some("NR10"),
         0x111 => Some("NR11"),
         0x112 => Some("NR12"),
@@ -3046,11 +2994,11 @@ fn reg_name(reg: usize) -> Option<&'static str> {
         0x121 => Some("NR42"),
         0x122 => Some("NR43"),
         0x123 => Some("NR44"),
-        0x130 => Some("WAVE_RAM_START"),
-        0x13f => Some("WAVE_RAM_END"),
         0x124 => Some("NR50"),
         0x125 => Some("NR51"),
         0x126 => Some("NR52"),
+        0x130 => Some("WAVE_RAM_START"),
+        0x13f => Some("WAVE_RAM_END"),
         0x140 => Some("LCDC"),
         0x141 => Some("STAT"),
         0x142 => Some("SCY"),

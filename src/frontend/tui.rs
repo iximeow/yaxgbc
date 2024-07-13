@@ -7,7 +7,7 @@ use crate::{STAT, SCX, SCY, IF, IE, GBC};
 #[allow(dead_code)]
 pub(crate) fn do_ui(gb_state: Arc<Mutex<GBC>>) {
     loop {
-        let mut gb = gb_state.lock().unwrap();
+        let gb = gb_state.lock().unwrap();
         // paint screen
         let mut screen = String::new();
 
