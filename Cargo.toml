@@ -6,7 +6,7 @@ license = "0BSD"
 edition = "2021"
 keywords = []
 repository = "https://git.iximeow.net/yaxpeax-gbc/about/"
-description = "gameboy color emulator"
+description = "gameboy/gameboy color emulator"
 readme = "README.md"
 
 [[bin]]
@@ -21,10 +21,10 @@ itertools = "0.10.1"
 rand = "0.8.5"
 egui-miniquad = "0.14.0"
 miniquad = "*"
-egui = "*"
-rodio = { version = "*", default-feature = false }
-tokio = { version = "*", features = ["full"] }
-windows = { version = "*" }
+egui = "0.21.0"
+rodio = { version = "0.17.3", default-feature = false }
+tokio = { version = "1.28.2", features = ["full"] }
+windows = { version = "0.46.0" }
 
 # common interfaces for all yaxpeax decoders
 yaxpeax-arch = { version = "0.2.4" , default-features = false, features = ["std"] }
